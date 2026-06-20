@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 仮想環境
+.venv/
+venv/
+env/
+
+# Poetry
+poetry.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# エディタ
+.vscode/
+.idea/
+
+# 出力PNG（再生成可能）
+outputs/
+旧版/*.png
+旧版/6.8_old/*.png
+
+# 旧版の仮想環境とキャッシュ
+旧版/6.8_old/.venv/
+旧版/db_output.txt
+旧版/inspect_page.js
+
+# Claude Code メモリ
+.claude/
