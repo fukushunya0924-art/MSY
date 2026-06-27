@@ -42,10 +42,12 @@ from data_loader import load_clean_dataframe, get_series, SPECIES_LABELS, KEYS
 from model import estimate
 from msy_core import (
     normalize_X0,
+    average_yield,
     scan_common_rate,
     grid_search_msy,
     species_sensitivity,
     tactical_msy_per_year,
+    check_sustainability,
     N_GRID, N_COMMON, N_SENS,
 )
 
@@ -68,6 +70,14 @@ N_STARTS   = 40
 #   NLM は 11 点・12 変数で識別性が保てるため正則化不要（Phase4 で λ>0 だと当てはまり悪化が判明）
 #   LM  は  8 点・12 変数で識別性が弱いため安定化
 REG_LAMBDA = {"NLM": 0.0, "LM": 0.005}
+
+# -----------------------------------------------------------------------
+# 持続性制約設定（戦略的 MSY にのみ適用）
+# -----------------------------------------------------------------------
+SUSTAIN_CFG = {"scope": "all", "mode": "endpoint", "tol": 0.1}
+# 戦略的 MSY 専用グリッド解像度（8^4 = 4096 評価）
+# 戦術的 MSY は既存の N_GRID=6 のまま維持する
+N_GRID_STRATEGIC = 8
 
 # 絵のカラー
 REGIME_COLORS = {"NLM": "#2166ac", "LM": "#d6604d"}
@@ -120,21 +130,65 @@ def _sep(char="=", n=72):
     return char * n
 
 
-def print_strategic_result(regime_name, model_str, T, grid_res):
-    """戦略的 MSY のグリッド探索結果をコンソールに整形出力する。"""
+def print_strategic_result(regime_name, model_str, T, grid_res,
+                           sustain_cfg=None, sustain_margins=None):
+    """
+    戦略的 MSY のグリッド探索結果をコンソールに整形出力する。
+
+    Parameters
+    ----------
+    grid_res : dict
+        grid_search_msy() の返り値。
+    sustain_cfg : dict or None
+        SUSTAIN_CFG（持続性制約設定）。制約版出力に使う。
+    sustain_margins : ndarray shape (4,) or None
+        制約 MSY 点での期末増減率。avg_yield の返り値から check_sustainability で取得済みのもの。
+    """
     print(_sep())
     print(f"[戦略的 MSY]  レジーム: {regime_name}  モデル: {model_str}  T={T:.1f} 年")
     print(_sep("-"))
+
+    # ── 無制約版（比較用・従来どおり） ──
     f_star = grid_res["f_star"]
     msy    = grid_res["msy"]
     per_sp = grid_res["per_species_at_msy"]
-    print(f"  MSY        = {msy:.3f} 千トン/年")
-    print(f"  最適 f*    : f_x1={f_star[0]:.3f}  f_x2={f_star[1]:.3f}  "
+    n_eval = grid_res["n_evaluated"]
+    n_ok   = grid_res["n_success"]
+    print(f"  [無制約] MSY = {msy:.3f} 千トン/年")
+    print(f"           f*  : f_x1={f_star[0]:.3f}  f_x2={f_star[1]:.3f}  "
           f"f_y1={f_star[2]:.3f}  f_y2={f_star[3]:.3f}")
-    print("  種別収量内訳（千トン/年）:")
+    print("           種別収量内訳（千トン/年）:")
     for i, lab in enumerate(SPECIES_LABELS):
-        print(f"    {lab:22s}: {per_sp[i]:.3f}")
-    print(f"  (評価点数: {grid_res['n_evaluated']:5d}  成功: {grid_res['n_success']:5d})")
+        print(f"             {lab:22s}: {per_sp[i]:.3f}")
+    print(f"  (評価点数: {n_eval:5d}  ODE成功: {n_ok:5d})")
+
+    # ── 制約版（sustain 指定時） ──
+    if sustain_cfg is not None:
+        n_feas = grid_res["n_feasible"]
+        f_con  = grid_res["f_star_constrained"]
+        msy_c  = grid_res["msy_constrained"]
+        per_c  = grid_res["per_species_at_msy_constrained"]
+        print(_sep("-"))
+        tol_pct = int(sustain_cfg.get("tol", 0.1) * 100)
+        print(f"  [制約版]  持続可能点: {n_feas:5d} / {n_eval:5d}")
+        print(f"  制約 MSY = {msy_c:.3f} 千トン/年"
+              f"  (全時点 ≥ 初期値×{100 - tol_pct}%)")
+        if np.isfinite(msy_c):
+            print(f"  制約 f*  : f_x1={f_con[0]:.3f}  f_x2={f_con[1]:.3f}  "
+                  f"f_y1={f_con[2]:.3f}  f_y2={f_con[3]:.3f}")
+            print("  制約 f* での種別収量（千トン/年）:")
+            for i, lab in enumerate(SPECIES_LABELS):
+                print(f"             {lab:22s}: {per_c[i]:.3f}")
+            if sustain_margins is not None:
+                print("  制約 f* 点での期末増減（margins = B_end/B0 - 1）:")
+                for i, lab in enumerate(SPECIES_LABELS):
+                    m_val = sustain_margins[i]
+                    if np.isfinite(m_val):
+                        print(f"             {lab:22s}: {m_val:+.1%}")
+                    else:
+                        print(f"             {lab:22s}: N/A")
+        else:
+            print("  ※ 持続可能点なし（feasible点が0件）")
 
 
 def print_tactical_summary(regime_name, model_str, tac_list):
@@ -360,6 +414,190 @@ def plot_nlm_lm_comparison(grid_nlm, grid_lm, model_str):
 
 
 # =============================================================================
+# 制約版プロット関数群（ファイル名: *_constrained_<model>.png）
+# =============================================================================
+
+def plot_grid_scatter_constrained(grid_results_nlm, grid_results_lm, model_str):
+    """
+    図 C1: グリッド全評価散布図（制約版）。
+    feasible 点と infeasible 点を色分けし、制約 MSY 点を星で強調する。
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    for ax, grid_res, rname in zip(
+        axes,
+        [grid_results_nlm, grid_results_lm],
+        ["NLM", "LM"],
+    ):
+        valid    = np.isfinite(grid_res["all_yield"])
+        feasible = grid_res["all_feasible"]
+
+        f_sum_inf  = grid_res["all_f"][valid & ~feasible].sum(axis=1)
+        y_inf      = grid_res["all_yield"][valid & ~feasible]
+        f_sum_feas = grid_res["all_f"][valid & feasible].sum(axis=1)
+        y_feas     = grid_res["all_yield"][valid & feasible]
+
+        # infeasible: 薄いグレー
+        ax.scatter(f_sum_inf, y_inf, c="lightgray", alpha=0.3, s=12,
+                   rasterized=True, label="infeasible")
+        # feasible: レジームカラー
+        color = REGIME_COLORS[rname]
+        ax.scatter(f_sum_feas, y_feas, c=color, alpha=0.5, s=15,
+                   rasterized=True, label="feasible")
+
+        # 制約 MSY 点を星マーク
+        msy_c = grid_res["msy_constrained"]
+        f_c   = grid_res["f_star_constrained"]
+        if np.isfinite(msy_c):
+            ax.scatter(
+                f_c.sum(), msy_c,
+                marker="*", s=250, color="gold", edgecolors="black",
+                linewidths=0.8, zorder=10,
+                label=f"制約MSY={msy_c:.2f}\nf*={f_c.round(3)}",
+            )
+
+        n_feas = grid_res["n_feasible"]
+        n_eval = grid_res["n_evaluated"]
+        ax.set_title(f"{rname}: 制約グリッド探索（持続可能点: {n_feas}/{n_eval}）")
+        ax.set_xlabel("漁獲率の合計 Σfᵢ")
+        ax.set_ylabel("平均漁獲量（千トン/年）")
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(True, ls="--", alpha=0.35)
+
+    fig.suptitle(f"制約グリッド散布図（feasible/infeasible 色分け） — {model_str}", fontsize=13)
+    plt.tight_layout()
+    out = os.path.join(_here, f"msy_grid_scatter_constrained_{model_str}.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  → {out}")
+
+
+def plot_common_sweep_constrained(sweep_results, model_str):
+    """
+    図 C2: 共通漁獲率スイープ（制約版）。
+    feasible 域を緑網掛けで示し、制約 MSY 点を縦線で強調する。
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    regime_names = ["NLM", "LM"]
+
+    for col, (rname, sweep) in enumerate(zip(regime_names, sweep_results)):
+        ax = axes[col]
+        fc = sweep["f_common"]
+        my = sweep["mean_yield"]
+        feasible_mask = sweep["feasible_mask"]
+
+        ax.plot(fc, my, "k-", lw=2.5, label="合計（無制約）")
+
+        # feasible 域を薄い緑で塗りつぶす
+        for i in range(len(fc) - 1):
+            if feasible_mask[i] and feasible_mask[i + 1]:
+                ax.axvspan(fc[i], fc[i + 1], color="green", alpha=0.12)
+
+        # 個別点を色分けして描く
+        ax.scatter(
+            fc[feasible_mask], my[feasible_mask],
+            c="green", s=20, zorder=5, label="feasible", alpha=0.8,
+        )
+        ax.scatter(
+            fc[~feasible_mask], my[~feasible_mask],
+            c="lightgray", s=15, zorder=4, label="infeasible", alpha=0.5,
+        )
+
+        # 制約最大点
+        best_f_c = sweep["best_f_constrained"]
+        best_y_c = sweep["best_yield_constrained"]
+        if np.isfinite(best_f_c):
+            ax.axvline(best_f_c, color="green", ls="--", lw=1.5,
+                       label=f"制約最大 f={best_f_c:.3f}")
+            ax.axhline(best_y_c, color="green", ls=":", lw=1.2)
+
+        # 無制約最大点
+        if np.isfinite(sweep["best_f"]):
+            ax.axvline(sweep["best_f"], color="gray", ls=":", lw=1.2,
+                       label=f"無制約最大 f={sweep['best_f']:.3f}")
+
+        ax.set_title(f"{rname}: 共通漁獲率スイープ（制約版・{model_str}）")
+        ax.set_xlabel("共通漁獲率 f")
+        ax.set_ylabel("平均漁獲量（千トン/年）")
+        ax.legend(fontsize=8, loc="upper right")
+        ax.grid(True, ls="--", alpha=0.45)
+
+    fig.suptitle("共通漁獲率スイープ（制約版 feasible 域を緑で表示）", fontsize=13)
+    plt.tight_layout()
+    out = os.path.join(_here, f"msy_common_sweep_constrained_{model_str}.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  → {out}")
+
+
+def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
+    """
+    図 C3: NLM vs LM の制約 MSY 値と種別収量の棒グラフ比較。
+    無制約 MSY も同一グラフに薄く重ねて比較する。
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    # ── 左: MSY 値の比較（無制約 vs 制約） ──
+    ax = axes[0]
+    rnames    = ["NLM", "LM"]
+    msys_unc  = [grid_nlm["msy"],             grid_lm["msy"]]
+    msys_con  = [grid_nlm["msy_constrained"], grid_lm["msy_constrained"]]
+    x_pos     = np.arange(len(rnames))
+    width     = 0.35
+    colors    = [REGIME_COLORS["NLM"], REGIME_COLORS["LM"]]
+
+    bars_unc = ax.bar(x_pos - width / 2, msys_unc, width,
+                      color=colors, alpha=0.4, edgecolor="black",
+                      label="無制約 MSY", hatch="//")
+    bars_con = ax.bar(x_pos + width / 2, msys_con, width,
+                      color=colors, alpha=0.85, edgecolor="black",
+                      label="制約 MSY")
+    for bar, val in zip(bars_unc, msys_unc):
+        if np.isfinite(val):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
+                    f"{val:.2f}", ha="center", va="bottom", fontsize=9, color="gray")
+    for bar, val in zip(bars_con, msys_con):
+        if np.isfinite(val):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
+                    f"{val:.2f}", ha="center", va="bottom", fontsize=9)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(rnames)
+    ax.set_ylabel("最大平均漁獲量（千トン/年）")
+    ax.set_title(f"戦略的 MSY 比較（無制約 vs 制約） — {model_str}")
+    ax.legend(fontsize=9)
+    ax.grid(axis="y", ls="--", alpha=0.5)
+
+    # ── 右: 制約 f* での種別収量内訳 ──
+    ax2 = axes[1]
+    x  = np.arange(2)
+    bottom = np.zeros(2)
+    per_sp_data = np.vstack([
+        grid_nlm["per_species_at_msy_constrained"],
+        grid_lm["per_species_at_msy_constrained"],
+    ]).T   # shape (4, 2)
+
+    for i, lab in enumerate(SPECIES_LABELS):
+        vals = per_sp_data[i]
+        vals_clipped = np.where(np.isfinite(vals), np.clip(vals, 0, None), 0.0)
+        ax2.bar(x, vals_clipped, width, bottom=bottom,
+                color=SPECIES_COLORS[i], label=lab, edgecolor="white", lw=0.5)
+        bottom += vals_clipped
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(["NLM", "LM"])
+    ax2.set_ylabel("種別平均漁獲量（千トン/年）")
+    ax2.set_title(f"制約 f* での種別収量内訳 — {model_str}")
+    ax2.legend(fontsize=8, loc="upper right")
+    ax2.grid(axis="y", ls="--", alpha=0.5)
+
+    plt.tight_layout()
+    out = os.path.join(_here, f"msy_nlm_lm_comparison_constrained_{model_str}.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  → {out}")
+
+
+# =============================================================================
 # メイン
 # =============================================================================
 
@@ -372,7 +610,10 @@ def main():
     print(_sep())
     print(f"MSY 計算  モデル: {model_str}  "
           f"正則化: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']}  "
-          f"グリッド: {N_GRID}^4={N_GRID**4} 評価")
+          f"戦略グリッド: {N_GRID_STRATEGIC}^4={N_GRID_STRATEGIC**4} 評価  "
+          f"戦術グリッド: {N_GRID}^4={N_GRID**4} 評価")
+    print(f"持続性制約: scope={SUSTAIN_CFG['scope']}  mode={SUSTAIN_CFG['mode']}  "
+          f"tol={SUSTAIN_CFG['tol']}")
     print(_sep())
 
     # ------------------------------------------------------------------
@@ -412,6 +653,8 @@ def main():
     sweep_res_list = []
     grid_res_list  = []
     sens_res_list  = []
+    # 制約 MSY 点での margins（コンソール表示用）
+    sustain_margins_dict = {}
 
     for rname, sl, _ in regimes:
         est  = est_results[rname]
@@ -422,22 +665,40 @@ def main():
 
         print(f"\n  ── {rname}  T={T:.1f} 年 ──")
 
-        # スイープ 1: 共通漁獲率
-        print(f"  1. 共通漁獲率スイープ ({N_COMMON} 点) ...", flush=True)
-        sweep = scan_common_rate(pn, mn, model_str, T, X0n)
+        # スイープ 1: 共通漁獲率（制約付き）
+        print(f"  1. 共通漁獲率スイープ ({N_COMMON} 点, 制約付き) ...", flush=True)
+        sweep = scan_common_rate(pn, mn, model_str, T, X0n, sustain=SUSTAIN_CFG)
         sweep_res_list.append(sweep)
-        print(f"     最大収量: {sweep['best_yield']:.3f} 千トン/年  "
+        print(f"     最大収量（無制約）: {sweep['best_yield']:.3f} 千トン/年  "
               f"at f_common={sweep['best_f']:.3f}")
+        print(f"     最大収量（制約）  : {sweep['best_yield_constrained']:.3f} 千トン/年  "
+              f"at f_common={sweep['best_f_constrained']:.3f}")
 
-        # スイープ 2: 4 次元グリッド探索
-        print(f"  2. グリッド探索 ({N_GRID}^4={N_GRID**4} 評価) ...", flush=True)
-        grid = grid_search_msy(pn, mn, model_str, T, X0n)
+        # スイープ 2: 4 次元グリッド探索（制約付き、N_GRID_STRATEGIC=8）
+        print(f"  2. グリッド探索 ({N_GRID_STRATEGIC}^4={N_GRID_STRATEGIC**4} 評価, 制約付き) ...",
+              flush=True)
+        grid = grid_search_msy(pn, mn, model_str, T, X0n,
+                                n_grid=N_GRID_STRATEGIC, sustain=SUSTAIN_CFG)
         grid_res_list.append(grid)
-        print_strategic_result(rname, model_str, T, grid)
 
-        # スイープ 3: 種別感度
-        print(f"  3. 種別感度スイープ ({N_SENS} 点 × 4 種) ...", flush=True)
-        sens = species_sensitivity(grid["f_star"], pn, mn, model_str, T, X0n)
+        # 制約 MSY 点での margins を取得（コンソール表示・average_yield を 1回追加実行）
+        margins_con = None
+        f_con = grid["f_star_constrained"]
+        if np.isfinite(grid["msy_constrained"]):
+            _res_con = average_yield(f_con, pn, mn, model_str, T, X0n)
+            if _res_con["success"]:
+                sc = check_sustainability(_res_con["traj_abs"], **SUSTAIN_CFG)
+                margins_con = sc["margins"]
+        sustain_margins_dict[rname] = margins_con
+
+        print_strategic_result(rname, model_str, T, grid,
+                               sustain_cfg=SUSTAIN_CFG,
+                               sustain_margins=margins_con)
+
+        # スイープ 3: 種別感度（制約 f* を基準点にする）
+        print(f"  3. 種別感度スイープ ({N_SENS} 点 × 4 種, 基準: 制約 f*) ...", flush=True)
+        f_base = f_con if np.isfinite(grid["msy_constrained"]) else grid["f_star"]
+        sens = species_sensitivity(f_base, pn, mn, model_str, T, X0n)
         sens_res_list.append(sens)
         print(f"     完了")
 
@@ -463,11 +724,16 @@ def main():
     # Step 4: PNG 出力
     # ------------------------------------------------------------------
     print(f"\n[Step 4] PNG 出力")
+    # ── 無制約版（既存・そのまま残す） ──
     plot_common_sweep(sweep_res_list, model_str)
     plot_grid_scatter(grid_res_list[0], grid_res_list[1], model_str)
     plot_sensitivity(sens_res_list[0], sens_res_list[1], model_str)
     plot_tactical(tactical["NLM"], tactical["LM"], model_str)
     plot_nlm_lm_comparison(grid_res_list[0], grid_res_list[1], model_str)
+    # ── 制約版（新規） ──
+    plot_grid_scatter_constrained(grid_res_list[0], grid_res_list[1], model_str)
+    plot_common_sweep_constrained(sweep_res_list, model_str)
+    plot_nlm_lm_comparison_constrained(grid_res_list[0], grid_res_list[1], model_str)
 
     # ------------------------------------------------------------------
     # Step 5: 全体サマリ
@@ -475,12 +741,20 @@ def main():
     print("\n" + _sep())
     print("[全体サマリ]")
     print(_sep("-"))
-    print(f"{'レジーム':>6}  {'戦略的MSY(千トン/年)':>22}  最適 f*（x1, x2, y1, y2）")
+    print(f"{'レジーム':>6}  {'無制約MSY':>12}  {'制約MSY':>10}  "
+          f"持続可能点/評価点  制約 f*（x1, x2, y1, y2）")
     for rname, data in strategic.items():
-        g = data["grid"]
-        f = g["f_star"]
-        print(f"  {rname:>4}  {g['msy']:>22.3f}  "
-              f"{f[0]:.3f}  {f[1]:.3f}  {f[2]:.3f}  {f[3]:.3f}")
+        g       = data["grid"]
+        f_unc   = g["f_star"]
+        f_con   = g["f_star_constrained"]
+        msy_unc = g["msy"]
+        msy_con = g["msy_constrained"]
+        n_feas  = g["n_feasible"]
+        n_eval  = g["n_evaluated"]
+        f_con_str = (f"{f_con[0]:.3f}  {f_con[1]:.3f}  {f_con[2]:.3f}  {f_con[3]:.3f}"
+                     if np.isfinite(msy_con) else "N/A")
+        print(f"  {rname:>4}  {msy_unc:>12.3f}  {msy_con:>10.3f}  "
+              f"{n_feas:>7d} / {n_eval:<6d}  {f_con_str}")
     print(_sep())
     print("MSY 計算完了。")
 

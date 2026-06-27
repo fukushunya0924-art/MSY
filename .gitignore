@@ -33,3 +33,4 @@ outputs/
 
 # Claude Code メモリ
 .claude/
+*.png

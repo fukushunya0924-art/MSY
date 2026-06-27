@@ -126,6 +126,8 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
       't'                   : ndarray  時間グリッド [0, T]
       'traj_abs'            : ndarray shape (4, n_eval)  絶対スケール軌道（千トン）。失敗時 None。
       'success'             : bool  ODE 積分が成功したか。
+      'B_start'             : ndarray shape (4,)  初期資源量（千トン）。失敗時 None。
+      'B_end'               : ndarray shape (4,)  期末資源量（千トン）。失敗時 None。
     """
     f_vec = np.asarray(f_vec, dtype=float)
     means = np.asarray(means, dtype=float)
@@ -152,6 +154,8 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
             "t": t_eval,
             "traj_abs": None,
             "success": False,
+            "B_start": None,
+            "B_end": None,
         }
 
     if sol.status != 0 or sol.y.shape[1] != len(t_eval) or not np.all(np.isfinite(sol.y)):
@@ -161,6 +165,8 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
             "t": t_eval,
             "traj_abs": None,
             "success": False,
+            "B_start": None,
+            "B_end": None,
         }
 
     # 絶対スケール軌道（千トン）: traj_norm[i] * means[i]
@@ -184,6 +190,8 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
             "t": t_eval,
             "traj_abs": None,
             "success": False,
+            "B_start": None,
+            "B_end": None,
         }
 
     return {
@@ -192,6 +200,78 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
         "t": t_eval,
         "traj_abs": traj_abs,
         "success": True,
+        "B_start": traj_abs[:, 0].copy(),   # 初期資源量（千トン）
+        "B_end":   traj_abs[:, -1].copy(),  # 期末資源量（千トン）
+    }
+
+
+# =============================================================================
+# 持続性制約チェック
+# =============================================================================
+
+def check_sustainability(traj_abs, scope="all", mode="path", tol=0.1):
+    """
+    軌道 traj_abs に対して「非減少資源量制約（持続性制約）」を判定する。
+
+    Parameters
+    ----------
+    traj_abs : ndarray, shape (4, n_eval)  または  None
+        average_yield() が返す絶対スケール軌道（千トン）。
+        None の場合（積分失敗）は infeasible を返す。
+    scope : str
+        制約対象種。"all" → [0,1,2,3], "prey" → [0,1], "predator" → [2,3]。
+    mode : str
+        "endpoint" → 期末のみ判定 (B_check = traj_abs[:, -1])。
+        "path"     → 全時点の最小で判定 (B_check = traj_abs.min(axis=1))。
+        通常は "path" を使う（デフォルト）。
+    tol : float
+        許容減少率（0〜1）。tol=0.1 なら初期値の 10% 減まで OK。
+
+    Returns
+    -------
+    dict with keys:
+      'feasible'  : bool    制約を満たすか。
+      'margins'   : ndarray shape (4,)  期末の相対増減 (B_end/B0 - 1)。infeasible 時は None。
+      'B_check'   : ndarray shape (4,)  判定に使った資源量（mode="path" なら全時点最小）。
+      'B0'        : ndarray shape (4,)  初期資源量。
+    """
+    # ── 積分失敗ガード ──
+    if traj_abs is None:
+        return {"feasible": False, "margins": None, "B_check": None, "B0": None}
+
+    # ── scope → インデックス ──
+    _scope_map = {
+        "all":      [0, 1, 2, 3],
+        "prey":     [0, 1],
+        "predator": [2, 3],
+    }
+    indices = _scope_map.get(scope, [0, 1, 2, 3])
+
+    # ── 初期資源量 ──
+    B0 = traj_abs[:, 0]
+
+    # ── 判定値（mode 別） ──
+    if mode == "endpoint":
+        B_check = traj_abs[:, -1]
+    else:  # "path"
+        B_check = traj_abs.min(axis=1)   # 全時点の最小
+
+    # ── 種別合否 ──
+    feasible = all(
+        float(B_check[i]) >= float(B0[i]) * (1.0 - tol)
+        for i in indices
+    )
+
+    # ── margins: 期末の相対増減（参考情報） ──
+    B_end = traj_abs[:, -1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        margins = B_end / B0 - 1.0   # ゼロ割は inf/nan のまま
+
+    return {
+        "feasible": bool(feasible),
+        "margins":  margins,
+        "B_check":  B_check.copy(),
+        "B0":       B0.copy(),
     }
 
 
@@ -200,7 +280,7 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
 # =============================================================================
 
 def scan_common_rate(params_norm, means, model_str, T, X0_norm,
-                     n_common=N_COMMON, n_eval=N_EVAL_TRAJ):
+                     n_common=N_COMMON, n_eval=N_EVAL_TRAJ, sustain=None):
     """
     全4種に同じ定数漁獲率 f_common ∈ linspace(0, F_MAX, n_common) を与え、
     平均漁獲量 vs f_common の収量曲線を求める。
@@ -223,19 +303,28 @@ def scan_common_rate(params_norm, means, model_str, T, X0_norm,
         スイープ点数（デフォルト N_COMMON=40）
     n_eval : int
         ODE 積分の t_eval 点数
+    sustain : dict or None
+        None → 無制約（デフォルト）。
+        dict の場合は持続性制約を評価する。例:
+          {"scope": "all", "mode": "path", "tol": 0.1}
+        check_sustainability() にそのまま ** 展開して渡す。
 
     Returns
     -------
     dict with keys:
-      'f_common'      : ndarray, shape (n_common,)  漁獲率グリッド
-      'mean_yield'    : ndarray, shape (n_common,)  対応する平均漁獲量（千トン/年）
-      'per_species'   : ndarray, shape (4, n_common)  種別平均漁獲量
-      'best_f'        : float  最大収量を達成した f_common
-      'best_yield'    : float  最大収量値（千トン/年）
+      'f_common'              : ndarray, shape (n_common,)  漁獲率グリッド
+      'mean_yield'            : ndarray, shape (n_common,)  対応する平均漁獲量（千トン/年）
+      'per_species'           : ndarray, shape (4, n_common)  種別平均漁獲量
+      'best_f'                : float  最大収量を達成した f_common（無制約）
+      'best_yield'            : float  最大収量値（千トン/年）（無制約）
+      'feasible_mask'         : ndarray shape (n_common,), bool  各点の持続性可否（sustain 指定時のみ有意）
+      'best_f_constrained'    : float  持続可能点の中で最大収量を達成した f_common（sustain 指定時）
+      'best_yield_constrained': float  制約下の最大収量値（sustain 指定時）
     """
     f_grid = np.linspace(F_MIN, F_MAX, n_common)
-    mean_yields   = np.full(n_common, np.nan)
-    per_species   = np.full((4, n_common), np.nan)
+    mean_yields    = np.full(n_common, np.nan)
+    per_species    = np.full((4, n_common), np.nan)
+    feasible_mask  = np.zeros(n_common, dtype=bool)
 
     for i, fc in enumerate(f_grid):
         f_vec = np.full(4, fc)
@@ -243,23 +332,40 @@ def scan_common_rate(params_norm, means, model_str, T, X0_norm,
         if res["success"]:
             mean_yields[i] = res["mean_yield"]
             per_species[:, i] = res["per_species_yield"]
+            # 持続性判定（sustain 指定時）
+            if sustain is not None:
+                sc = check_sustainability(res["traj_abs"], **sustain)
+                feasible_mask[i] = sc["feasible"]
 
-    # NaN を除いて最大を探す
+    # NaN を除いて最大を探す（無制約）
     valid = np.isfinite(mean_yields)
     if valid.any():
-        best_idx = int(np.nanargmax(mean_yields))
-        best_f   = float(f_grid[best_idx])
+        best_idx   = int(np.nanargmax(mean_yields))
+        best_f     = float(f_grid[best_idx])
         best_yield = float(mean_yields[best_idx])
     else:
-        best_f = float("nan")
+        best_f     = float("nan")
         best_yield = float("nan")
 
+    # 制約下の最大（sustain 指定時）
+    constrained_valid = feasible_mask & np.isfinite(mean_yields)
+    if constrained_valid.any():
+        ci = int(np.nanargmax(np.where(constrained_valid, mean_yields, -np.inf)))
+        best_f_constrained     = float(f_grid[ci])
+        best_yield_constrained = float(mean_yields[ci])
+    else:
+        best_f_constrained     = float("nan")
+        best_yield_constrained = float("nan")
+
     return {
-        "f_common":   f_grid,
-        "mean_yield": mean_yields,
-        "per_species": per_species,
-        "best_f":     best_f,
-        "best_yield": best_yield,
+        "f_common":               f_grid,
+        "mean_yield":             mean_yields,
+        "per_species":            per_species,
+        "best_f":                 best_f,
+        "best_yield":             best_yield,
+        "feasible_mask":          feasible_mask,
+        "best_f_constrained":     best_f_constrained,
+        "best_yield_constrained": best_yield_constrained,
     }
 
 
@@ -268,7 +374,7 @@ def scan_common_rate(params_norm, means, model_str, T, X0_norm,
 # =============================================================================
 
 def grid_search_msy(params_norm, means, model_str, T, X0_norm,
-                    n_grid=N_GRID, n_eval=N_EVAL_TRAJ):
+                    n_grid=N_GRID, n_eval=N_EVAL_TRAJ, sustain=None):
     """
     各 fᵢ ∈ linspace(0, F_MAX, n_grid) の直積グリッドを全列挙し、
     平均漁獲量を最大化する漁獲率ベクトル f* と MSY 値を求める。
@@ -287,17 +393,28 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
         各軸の点数（デフォルト N_GRID=6、6^4=1296 評価）
     n_eval : int
         ODE t_eval 点数
+    sustain : dict or None
+        None → 無制約のみ計算（デフォルト）。
+        dict の場合は持続性制約版も同時に計算する。例:
+          {"scope": "all", "mode": "path", "tol": 0.1}
+        check_sustainability() に ** 展開して渡す。
 
     Returns
     -------
-    dict with keys:
-      'f_star'             : ndarray, shape (4,)  MSY を達成する最適漁獲率
-      'msy'                : float  最大平均漁獲量（千トン/年）
-      'per_species_at_msy' : ndarray, shape (4,)  f* での種別漁獲量（千トン/年）
-      'n_evaluated'        : int  評価したグリッド点数
-      'n_success'          : int  ODE が成功した評価数
-      'all_f'              : ndarray, shape (n_evaluated, 4)  全グリッド点
-      'all_yield'          : ndarray, shape (n_evaluated,)   全グリッド点の漁獲量
+    dict with keys（無制約版・常に存在）:
+      'f_star'                       : ndarray, shape (4,)  無制約 MSY の最適漁獲率
+      'msy'                          : float  無制約 MSY（千トン/年）
+      'per_species_at_msy'           : ndarray, shape (4,)  f* での種別漁獲量
+      'n_evaluated'                  : int  評価したグリッド点数
+      'n_success'                    : int  ODE が成功した評価数
+      'all_f'                        : ndarray, shape (n_evaluated, 4)
+      'all_yield'                    : ndarray, shape (n_evaluated,)
+    追加キー（sustain 指定時のみ有意）:
+      'all_feasible'                 : ndarray shape (n_evaluated,), bool  各点の持続性可否
+      'n_feasible'                   : int  持続可能点数
+      'f_star_constrained'           : ndarray, shape (4,)  制約 MSY の最適漁獲率
+      'msy_constrained'              : float  制約 MSY（千トン/年）
+      'per_species_at_msy_constrained': ndarray, shape (4,)  制約 f* での種別漁獲量
     """
     f_axis = np.linspace(F_MIN, F_MAX, n_grid)
 
@@ -306,22 +423,38 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
     all_f = g.reshape(4, -1).T   # shape (n_grid^4, 4)
 
     n_total = len(all_f)
-    all_yield   = np.full(n_total, np.nan)
+    all_yield      = np.full(n_total, np.nan)
+    all_feasible   = np.zeros(n_total, dtype=bool)
     per_species_best = None
-    best_yield = -np.inf
-    best_idx   = -1
-    n_success  = 0
+    best_yield     = -np.inf
+    best_idx       = -1
+    n_success      = 0
+
+    # 制約版トラッキング
+    best_yield_con  = -np.inf
+    best_idx_con    = -1
+    per_species_con = None
 
     for idx, f_vec in enumerate(all_f):
         res = average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=n_eval)
         if res["success"]:
             all_yield[idx] = res["mean_yield"]
             n_success += 1
+            # 無制約最大更新
             if res["mean_yield"] > best_yield:
-                best_yield = res["mean_yield"]
-                best_idx   = idx
+                best_yield       = res["mean_yield"]
+                best_idx         = idx
                 per_species_best = res["per_species_yield"].copy()
+            # 持続性判定（sustain 指定時）
+            if sustain is not None:
+                sc = check_sustainability(res["traj_abs"], **sustain)
+                all_feasible[idx] = sc["feasible"]
+                if sc["feasible"] and res["mean_yield"] > best_yield_con:
+                    best_yield_con  = res["mean_yield"]
+                    best_idx_con    = idx
+                    per_species_con = res["per_species_yield"].copy()
 
+    # ── 無制約 ──
     if best_idx >= 0:
         f_star = all_f[best_idx].copy()
         msy    = float(best_yield)
@@ -331,7 +464,7 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
         msy    = float("nan")
         per_sp = np.full(4, float("nan"))
 
-    return {
+    ret = {
         "f_star":             f_star,
         "msy":                msy,
         "per_species_at_msy": per_sp,
@@ -339,7 +472,26 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
         "n_success":          n_success,
         "all_f":              all_f,
         "all_yield":          all_yield,
+        # sustain 不問で初期化（sustain=None 時は all_feasible は全 False、n_feasible=0）
+        "all_feasible":       all_feasible,
+        "n_feasible":         int(all_feasible.sum()),
     }
+
+    # ── 制約版 ──
+    if best_idx_con >= 0:
+        f_star_con = all_f[best_idx_con].copy()
+        msy_con    = float(best_yield_con)
+        per_sp_con = per_species_con
+    else:
+        f_star_con = np.full(4, float("nan"))
+        msy_con    = float("nan")
+        per_sp_con = np.full(4, float("nan"))
+
+    ret["f_star_constrained"]            = f_star_con
+    ret["msy_constrained"]               = msy_con
+    ret["per_species_at_msy_constrained"] = per_sp_con
+
+    return ret
 
 
 # =============================================================================
