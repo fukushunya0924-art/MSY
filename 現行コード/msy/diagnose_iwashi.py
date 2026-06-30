@@ -120,7 +120,7 @@ def sweep_fx1(rname, est, sl, T):
     for i, fx1 in enumerate(F_SWEEP):
         f_vec = f_base.copy()
         f_vec[0] = fx1
-        res = average_yield(f_vec, pn, mn, MODEL_STR, T, X0_norm, n_eval=N_EVAL_TRAJ)
+        res = average_yield(f_vec, pn, mn, T, X0_norm, n_eval=N_EVAL_TRAJ)
         if not res["success"]:
             continue
 
@@ -277,7 +277,7 @@ def main():
     for rname, sl in regimes_data:
         reg = REG_LAMBDA[rname]
         print(f"  {rname} (reg_lambda={reg}) ...", flush=True)
-        res = estimate(sl, model=MODEL_STR, n_starts=N_STARTS, reg_lambda=reg, seed=0)
+        res = estimate(sl, n_starts=N_STARTS, reg_lambda=reg, seed=0)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")

@@ -60,17 +60,12 @@ def normalize_X0(obs_abs_at_t0, means):
     return obs / m
 
 
-def _const_f_ode(model_str, f_vec):
+def _const_f_ode(f_vec):
     """
-    定数漁獲圧ベクトル f_vec を注入した ODE を返す。
-
-    親モジュール model.py の make_ode() に「定数を返す callable」を渡すことで、
-    既存の ODE 定義を一切書き換えずに再利用する。
+    定数漁獲圧ベクトル f_vec を注入した capacity_ry ODE を返す。
 
     Parameters
     ----------
-    model_str : str
-        "capacity" または "capacity_ry"
     f_vec : array-like, shape (4,)
         定数漁獲圧 [f_x1, f_x2, f_y1, f_y2]
 
@@ -78,12 +73,10 @@ def _const_f_ode(model_str, f_vec):
     -------
     callable : ode(t, state, p) の形式で solve_ivp に渡せる ODE 右辺
     """
-    # 遅延 import（rank1 等と同じパターンで親フォルダの model.py を使う）
     from model import make_ode
 
     f_x1, f_x2, f_y1, f_y2 = f_vec
     return make_ode(
-        model_str,
         lambda t: f_x1,
         lambda t: f_x2,
         lambda t: f_y1,
@@ -91,7 +84,7 @@ def _const_f_ode(model_str, f_vec):
     )
 
 
-def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVAL_TRAJ):
+def average_yield(f_vec, params_norm, means, T, X0_norm, n_eval=N_EVAL_TRAJ):
     """
     定数漁獲圧 f_vec のもとで ODE を積分し、4種の平均漁獲量を計算する。
 
@@ -109,8 +102,6 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
         estimate() 返り値の 'params_norm'（正規化パラメータ）。
     means : ndarray, shape (4,)
         estimate() 返り値の 'means'（各種の全期間平均資源量, 千トン）。
-    model_str : str
-        "capacity" または "capacity_ry"
     T : float
         積分期間（年）。
     X0_norm : array-like, shape (4,)
@@ -133,7 +124,7 @@ def average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=N_EVA
     means = np.asarray(means, dtype=float)
     X0_norm = np.asarray(X0_norm, dtype=float)
 
-    ode = _const_f_ode(model_str, f_vec)
+    ode = _const_f_ode(f_vec)
     t_eval = np.linspace(0.0, T, n_eval)
 
     try:
@@ -279,7 +270,7 @@ def check_sustainability(traj_abs, scope="all", mode="path", tol=0.1):
 # スイープ 1: 共通漁獲率スイープ
 # =============================================================================
 
-def scan_common_rate(params_norm, means, model_str, T, X0_norm,
+def scan_common_rate(params_norm, means, T, X0_norm,
                      n_common=N_COMMON, n_eval=N_EVAL_TRAJ, sustain=None):
     """
     全4種に同じ定数漁獲率 f_common ∈ linspace(0, F_MAX, n_common) を与え、
@@ -293,8 +284,6 @@ def scan_common_rate(params_norm, means, model_str, T, X0_norm,
         estimate() 返り値の 'params_norm'
     means : ndarray, shape (4,)
         estimate() 返り値の 'means'
-    model_str : str
-        "capacity" または "capacity_ry"
     T : float
         積分期間（年）
     X0_norm : array-like, shape (4,)
@@ -328,7 +317,7 @@ def scan_common_rate(params_norm, means, model_str, T, X0_norm,
 
     for i, fc in enumerate(f_grid):
         f_vec = np.full(4, fc)
-        res = average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=n_eval)
+        res = average_yield(f_vec, params_norm, means, T, X0_norm, n_eval=n_eval)
         if res["success"]:
             mean_yields[i] = res["mean_yield"]
             per_species[:, i] = res["per_species_yield"]
@@ -373,7 +362,7 @@ def scan_common_rate(params_norm, means, model_str, T, X0_norm,
 # スイープ 2: 4次元粗グリッド探索
 # =============================================================================
 
-def grid_search_msy(params_norm, means, model_str, T, X0_norm,
+def grid_search_msy(params_norm, means, T, X0_norm,
                     n_grid=N_GRID, n_eval=N_EVAL_TRAJ, sustain=None):
     """
     各 fᵢ ∈ linspace(0, F_MAX, n_grid) の直積グリッドを全列挙し、
@@ -386,7 +375,6 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
     ----------
     params_norm : ndarray
     means : ndarray, shape (4,)
-    model_str : str
     T : float
     X0_norm : array-like, shape (4,)
     n_grid : int
@@ -436,7 +424,7 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
     per_species_con = None
 
     for idx, f_vec in enumerate(all_f):
-        res = average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=n_eval)
+        res = average_yield(f_vec, params_norm, means, T, X0_norm, n_eval=n_eval)
         if res["success"]:
             all_yield[idx] = res["mean_yield"]
             n_success += 1
@@ -498,7 +486,7 @@ def grid_search_msy(params_norm, means, model_str, T, X0_norm,
 # スイープ 3: 種別 1 次元感度
 # =============================================================================
 
-def species_sensitivity(f_star, params_norm, means, model_str, T, X0_norm,
+def species_sensitivity(f_star, params_norm, means, T, X0_norm,
                         n_sens=N_SENS, n_eval=N_EVAL_TRAJ):
     """
     f* を基準に、1種ずつ fᵢ を [0, F_MAX] で動かし他は f* 固定にした
@@ -511,7 +499,7 @@ def species_sensitivity(f_star, params_norm, means, model_str, T, X0_norm,
     ----------
     f_star : array-like, shape (4,)
         グリッド探索で得た最適漁獲率（基準点）
-    params_norm, means, model_str, T, X0_norm : estimate() の結果と同じ
+    params_norm, means, T, X0_norm : estimate() の結果と同じ
     n_sens : int
         1 次元スイープ点数（デフォルト N_SENS=40）
     n_eval : int
@@ -536,7 +524,7 @@ def species_sensitivity(f_star, params_norm, means, model_str, T, X0_norm,
         for j, fi in enumerate(f_sweep):
             f_vec = f_star.copy()
             f_vec[species_idx] = fi
-            res = average_yield(f_vec, params_norm, means, model_str, T, X0_norm, n_eval=n_eval)
+            res = average_yield(f_vec, params_norm, means, T, X0_norm, n_eval=n_eval)
             if res["success"]:
                 mean_yields[j] = res["mean_yield"]
                 per_species[:, j] = res["per_species_yield"]
@@ -555,7 +543,7 @@ def species_sensitivity(f_star, params_norm, means, model_str, T, X0_norm,
 # 1 年ごとの戦術的 MSY
 # =============================================================================
 
-def tactical_msy_per_year(series_slice, params_norm, means, model_str,
+def tactical_msy_per_year(series_slice, params_norm, means,
                           n_grid=N_GRID, n_eval=N_EVAL_TRAJ):
     """
     レジーム内の各年について T=1 の戦術的 MSY を計算する。
@@ -571,7 +559,6 @@ def tactical_msy_per_year(series_slice, params_norm, means, model_str,
         そのレジームの推定 params_norm
     means : ndarray, shape (4,)
         そのレジームの means
-    model_str : str
     n_grid : int
         グリッド点数（n_grid^4 評価 × 年数）
     n_eval : int
@@ -600,8 +587,7 @@ def tactical_msy_per_year(series_slice, params_norm, means, model_str,
         res = grid_search_msy(
             params_norm=params_norm,
             means=means,
-            model_str=model_str,
-            T=1.0,                    # 1 年積分
+            T=1.0,
             X0_norm=X0_norm,
             n_grid=n_grid,
             n_eval=n_eval,
