@@ -638,7 +638,7 @@ def main():
         n_y = len(sl["years"])
         reg = REG_LAMBDA[rname]  # レジーム別に正則化強度を切り替える
         print(f"  推定中: {rname} ({n_y} 年, reg_lambda={reg}) ...", flush=True)
-        res = estimate(sl, model=model_str, n_starts=N_STARTS, reg_lambda=reg, seed=0)
+        res = estimate(sl, n_starts=N_STARTS, reg_lambda=reg, seed=0)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")
@@ -667,7 +667,7 @@ def main():
 
         # スイープ 1: 共通漁獲率（制約付き）
         print(f"  1. 共通漁獲率スイープ ({N_COMMON} 点, 制約付き) ...", flush=True)
-        sweep = scan_common_rate(pn, mn, model_str, T, X0n, sustain=SUSTAIN_CFG)
+        sweep = scan_common_rate(pn, mn, T, X0n, sustain=SUSTAIN_CFG)
         sweep_res_list.append(sweep)
         print(f"     最大収量（無制約）: {sweep['best_yield']:.3f} 千トン/年  "
               f"at f_common={sweep['best_f']:.3f}")
@@ -677,7 +677,7 @@ def main():
         # スイープ 2: 4 次元グリッド探索（制約付き、N_GRID_STRATEGIC=8）
         print(f"  2. グリッド探索 ({N_GRID_STRATEGIC}^4={N_GRID_STRATEGIC**4} 評価, 制約付き) ...",
               flush=True)
-        grid = grid_search_msy(pn, mn, model_str, T, X0n,
+        grid = grid_search_msy(pn, mn, T, X0n,
                                 n_grid=N_GRID_STRATEGIC, sustain=SUSTAIN_CFG)
         grid_res_list.append(grid)
 
@@ -685,7 +685,7 @@ def main():
         margins_con = None
         f_con = grid["f_star_constrained"]
         if np.isfinite(grid["msy_constrained"]):
-            _res_con = average_yield(f_con, pn, mn, model_str, T, X0n)
+            _res_con = average_yield(f_con, pn, mn, T, X0n)
             if _res_con["success"]:
                 sc = check_sustainability(_res_con["traj_abs"], **SUSTAIN_CFG)
                 margins_con = sc["margins"]
@@ -698,7 +698,7 @@ def main():
         # スイープ 3: 種別感度（制約 f* を基準点にする）
         print(f"  3. 種別感度スイープ ({N_SENS} 点 × 4 種, 基準: 制約 f*) ...", flush=True)
         f_base = f_con if np.isfinite(grid["msy_constrained"]) else grid["f_star"]
-        sens = species_sensitivity(f_base, pn, mn, model_str, T, X0n)
+        sens = species_sensitivity(f_base, pn, mn, T, X0n)
         sens_res_list.append(sens)
         print(f"     完了")
 
@@ -716,7 +716,7 @@ def main():
         est  = est_results[rname]
         n_y  = len(sl["years"])
         print(f"  {rname} ({n_y} 年 × {N_GRID**4} 評価 = {n_y * N_GRID**4} 評価) ...", flush=True)
-        tac = tactical_msy_per_year(sl, est["params_norm"], est["means"], model_str)
+        tac = tactical_msy_per_year(sl, est["params_norm"], est["means"])
         tactical[rname] = tac
         print_tactical_summary(rname, model_str, tac)
 
@@ -724,13 +724,8 @@ def main():
     # Step 4: PNG 出力
     # ------------------------------------------------------------------
     print(f"\n[Step 4] PNG 出力")
-    # ── 無制約版（既存・そのまま残す） ──
-    plot_common_sweep(sweep_res_list, model_str)
-    plot_grid_scatter(grid_res_list[0], grid_res_list[1], model_str)
     plot_sensitivity(sens_res_list[0], sens_res_list[1], model_str)
     plot_tactical(tactical["NLM"], tactical["LM"], model_str)
-    plot_nlm_lm_comparison(grid_res_list[0], grid_res_list[1], model_str)
-    # ── 制約版（新規） ──
     plot_grid_scatter_constrained(grid_res_list[0], grid_res_list[1], model_str)
     plot_common_sweep_constrained(sweep_res_list, model_str)
     plot_nlm_lm_comparison_constrained(grid_res_list[0], grid_res_list[1], model_str)
