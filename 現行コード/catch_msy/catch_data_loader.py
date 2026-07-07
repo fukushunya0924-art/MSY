@@ -42,7 +42,9 @@ SPECIES_LABELS = {
 }
 
 # 主対象（run_catch_msy.py が既定で回す4種）
-MAIN_KEYS = ["sardine", "anchovy", "buri", "sawara"]
+# 2026-07-07 確定: 被食者はマイワシ・ウルメイワシ（カタクチ→ウルメ置換）、
+# 捕食者はブリ・サワラ。
+MAIN_KEYS = ["sardine", "urume", "buri", "sawara"]
 
 # データソース（2026-07-04決定: 太平洋12県版を標準にする）
 #   系群混在を避けるため、太平洋沿岸12県（岩手・宮城・福島・茨城・千葉・静岡・
