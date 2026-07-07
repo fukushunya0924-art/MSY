@@ -44,8 +44,19 @@ _REG = {
         bio_scale=1/1000, catch_scale=1/1000),
 }
 
-ASSIGN = {"x1": "マイワシ", "x2": "カタクチイワシ", "y1": "ブリ", "y2": "サワラ"}
-SPECIES_LABELS = ["マイワシ (x1)", "カタクチイワシ (x2)", "ブリ (y1)", "サワラ (y2)"]
+# ウルメイワシは資源評価CSV（絶対資源量）が存在しないため、
+# 別の2ファイルを合成して bio / catch を作る（_load_urume 参照）。
+#   資源量指標値（相対値, 平均1） × URUME_MEAN_BIOMASS → 絶対資源量（千トン）
+#   URUME_MEAN_BIOMASS = 172.0 千トン
+#     FRA余剰生産モデルの K×bkfrac / 指標値(1979) を3モデル平均した値。
+#     相対指標値を絶対資源量スケールへ換算するための係数。
+URUME_MEAN_BIOMASS = 172.0
+_URUME_INDEX_FILE = "ウルメイワシ資源量指標値_FRA資源評価2025.csv"
+_URUME_CATCH_FILE = "estat_海面漁業魚種別漁獲量_太平洋12県_1956-2023.csv"
+_URUME_CATCH_COL = "ウルメイワシ"
+
+ASSIGN = {"x1": "マイワシ", "x2": "ウルメイワシ", "y1": "ブリ", "y2": "サワラ"}
+SPECIES_LABELS = ["マイワシ (x1)", "ウルメイワシ (x2)", "ブリ (y1)", "サワラ (y2)"]
 KEYS = ["x1", "x2", "y1", "y2"]
 
 
@@ -63,8 +74,51 @@ def _load_one(name):
     return out.dropna()
 
 
+def _load_urume():
+    """
+    ウルメイワシ専用ロード: 資源量指標値CSV × 漁獲量CSV(e-stat太平洋12県) を合成。
+
+    bio_ウルメイワシ（千トン） = 資源量指標値 × URUME_MEAN_BIOMASS   （年 1979-2024）
+    catch_ウルメイワシ（千トン） = e-stat太平洋12県「ウルメイワシ」列 ÷1000  （年 1956-2023）
+
+    e-statは2023年までのため、2024年の漁獲量は2023年の値を持ち越す（端点保持）。
+    """
+    data_dir = _data_dir()
+
+    idx = pd.read_csv(os.path.join(data_dir, _URUME_INDEX_FILE))
+    idx["年"] = pd.to_numeric(idx["年"], errors="coerce")
+    idx["資源量指標値"] = pd.to_numeric(idx["資源量指標値"], errors="coerce")
+    idx = idx.dropna()
+    bio = idx[["年"]].copy()
+    bio["bio_ウルメイワシ"] = idx["資源量指標値"].astype(float) * URUME_MEAN_BIOMASS
+
+    catch_df = pd.read_csv(os.path.join(data_dir, _URUME_CATCH_FILE), encoding="utf-8-sig")
+    catch_df = catch_df.rename(columns={catch_df.columns[0]: "年"})
+    catch_df["年"] = pd.to_numeric(catch_df["年"], errors="coerce")
+    catch_df[_URUME_CATCH_COL] = pd.to_numeric(catch_df[_URUME_CATCH_COL], errors="coerce")
+    catch_df = catch_df.dropna(subset=["年", _URUME_CATCH_COL])
+    catch = catch_df[["年"]].copy()
+    catch["catch_ウルメイワシ"] = catch_df[_URUME_CATCH_COL].astype(float) / 1000.0
+
+    # 2024年の漁獲量欠測 → 2023年の値を持ち越す（端点保持）
+    last_year = int(catch["年"].max())
+    if bio["年"].max() > last_year:
+        carry = catch.loc[catch["年"] == last_year, "catch_ウルメイワシ"].iloc[0]
+        for y in bio.loc[bio["年"] > last_year, "年"]:
+            catch = pd.concat(
+                [catch, pd.DataFrame({"年": [y], "catch_ウルメイワシ": [carry]})],
+                ignore_index=True,
+            )
+
+    out = bio.merge(catch, on="年")
+    return out.dropna().sort_values("年").reset_index(drop=True)
+
+
 def load_clean_dataframe():
-    dfs = [_load_one(ASSIGN[k]) for k in KEYS]
+    dfs = []
+    for k in KEYS:
+        name = ASSIGN[k]
+        dfs.append(_load_urume() if name == "ウルメイワシ" else _load_one(name))
     merged = dfs[0]
     for d in dfs[1:]:
         merged = merged.merge(d, on="年")
