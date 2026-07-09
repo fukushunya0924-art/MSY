@@ -1,14 +1,21 @@
 """
 Catch-MSY 用データローダ（漁獲量のみ・単一種）。
 
-e-stat 海面漁業魚種別漁獲量累年統計（全国, 1956-2024）の整形済 CSV を読み、
-魚種ごとに「年 → 漁獲量（千トン）」の時系列を返す。
+e-stat 海面漁業魚種別漁獲量累年統計の整形済 CSV を読み、魚種ごとに
+「年 → 漁獲量（千トン）」の時系列を返す。既定は太平洋12県版（1956-2023,
+系群混在を避けるための標準データ）。全国版（1956-2024）も csv_name 引数で
+選択可（詳細は _CSV_PACIFIC / _CSV_NATIONAL の定義を参照）。
 
 Catch-MSY は資源量を使わず漁獲量のみを入力とするため、既存の
 data_loader.py（資源量・漁獲圧まで扱う推定用）とは切り離した軽量ローダにする。
 
 元 CSV の単位はトン。ODE の数値スケールを既存コード（千トン）に揃えるため
 ÷1000 して千トンで返す。
+
+このモジュールは catch_msy パッケージ内で共有する小さな補助関数（グラフ描画の
+日本語フォント設定、CLI引数から魚種キーを拾う処理）も併せて提供する。
+run_catch_msy.py / sensitivity.py / plot_anchovy_catch.py で個別に重複定義
+しないよう、ここに一本化する。
 """
 import os
 import csv
@@ -117,6 +124,45 @@ def get_catch_series(key, csv_name=_CSV_NAME):
     years = np.asarray(years, dtype=int)[order]
     catch = np.asarray(catch, dtype=float)[order]
     return years, catch
+
+
+# -----------------------------------------------------------------------
+# catch_msy パッケージ共通の小さな補助関数
+# -----------------------------------------------------------------------
+# 日本語グラフに使うフォント（優先順）。環境によって Hiragino が無い場合に
+# 備えてフォールバックを並べる。
+_JP_FONT_CANDIDATES = ["Hiragino Sans", "DejaVu Sans", "Arial", "Heiti TC"]
+
+
+def setup_japanese_plot_style(agg=True):
+    """
+    matplotlib に日本語フォント設定を適用する（run_catch_msy.py /
+    sensitivity.py / plot_anchovy_catch.py で共通）。
+
+    agg=True の場合は描画バックエンドを "Agg" に固定してから
+    matplotlib.pyplot をインポートする（ディスプレイ不要のバッチ実行向け）。
+    呼び出し側で `import matplotlib.pyplot as plt` する前に呼ぶこと。
+    """
+    import matplotlib
+    if agg:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = list(_JP_FONT_CANDIDATES)
+    plt.rcParams["axes.unicode_minus"] = False
+    return plt
+
+
+def parse_species_args(argv, default_keys=None):
+    """
+    コマンドライン引数（sys.argv[1:] 相当）から SPECIES_LABELS に含まれる
+    魚種キーだけを拾って返す。該当が無ければ default_keys（既定 MAIN_KEYS）
+    を返す。run_catch_msy.py / sensitivity.py の `main()` で共通利用。
+    """
+    keys = [a for a in argv if a in SPECIES_LABELS]
+    if keys:
+        return keys
+    return list(default_keys) if default_keys is not None else list(MAIN_KEYS)
 
 
 if __name__ == "__main__":

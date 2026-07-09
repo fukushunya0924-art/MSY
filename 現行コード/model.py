@@ -22,6 +22,8 @@
 import os
 import functools
 import multiprocessing
+from typing import Callable, Optional
+
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.interpolate import interp1d
@@ -42,14 +44,29 @@ MODELS = {
     },
 }
 
+# 状態変数のアンダーフロー・ゼロ割り回避用フロア（正規化空間, 平均1.0スケール）
+_STATE_FLOOR = 1e-5
+# 対数誤差評価時に log(0) を避けるためのクリップ下限（正規化空間）
+_LOG_CLIP_MIN = 1e-5
+# 積分失敗（solve_ivp が非収束/例外）時に least_squares へ返す一律ペナルティ残差
+_INTEGRATION_FAILURE_PENALTY = 1e3
+# パラメータが探索範囲の上下限に「一致」とみなす相対許容誤差（at_bounds 判定用）
+_BOUNDS_RTOL = 1e-3
 
-def make_ode(fx1_i, fx2_i, fy1_i, fy2_i):
-    """正規化空間の capacity_ry ODE 右辺を返す。"""
+
+def make_ode(fx1_i: Callable[[float], float], fx2_i: Callable[[float], float],
+             fy1_i: Callable[[float], float], fy2_i: Callable[[float], float]):
+    """正規化空間の capacity_ry ODE 右辺を返す。
+
+    fx1_i, fx2_i, fy1_i, fy2_i : 各種の漁獲圧 f(t) を返す補間関数
+        （interp1d 等。年次観測値を線形補間して連続時間の ODE に注入する）。
+    """
     def ode(t, state, p):
         x1, x2, y1, y2 = state
         r_x1, r_x2, r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2 = p
-        x1 = max(1e-5, x1); x2 = max(1e-5, x2)
-        y1 = max(1e-5, y1); y2 = max(1e-5, y2)
+        # ゼロ割り・負値化を防ぐフロア（生物量は物理的に正のはず）
+        x1 = max(_STATE_FLOOR, x1); x2 = max(_STATE_FLOOR, x2)
+        y1 = max(_STATE_FLOOR, y1); y2 = max(_STATE_FLOOR, y2)
         dx1 = (r_x1 - fx1_i(t)) * x1 - L11 * x1 * y1 - L12 * x1 * y2
         dx2 = (r_x2 - fx2_i(t)) * x2 - L21 * x2 * y1 - L22 * x2 * y2
         dy1 = (-r_y1 - fy1_i(t)) * y1 + C1 * L11 * x1 * y1 + D1 * L21 * x2 * y1
@@ -58,8 +75,9 @@ def make_ode(fx1_i, fx2_i, fy1_i, fy2_i):
     return ode
 
 
-def simulate(params, ode, t_rel, init):
-    """頑健な積分。失敗時は None。"""
+def simulate(params: np.ndarray, ode: Callable, t_rel: np.ndarray,
+             init: list) -> Optional[np.ndarray]:
+    """正規化空間で ODE を積分する。失敗時（非収束・例外・非有限値）は None を返す。"""
     try:
         sol = solve_ivp(ode, [t_rel[0], t_rel[-1]], init, t_eval=t_rel,
                         args=(params,), method="LSODA", rtol=1e-7, atol=1e-9)
@@ -72,6 +90,14 @@ def simulate(params, ode, t_rel, init):
     return sol.y
 
 
+# マルチスタートの初期値サンプリングで、対数一様分布に切り替える
+# 探索範囲の比（upper/lower）の閾値。桁がこれを超えて広いパラメータ
+# （L11..L22, C1..D2 など）は対数空間で、そうでなければ線形空間で一様サンプルする。
+_LOG_UNIFORM_RATIO_THRESHOLD = 50
+# least_squares(method="trf") の最大関数評価回数
+_MAX_NFEV = 4000
+
+
 def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
     """
     1レジーム分を capacity_ry（12変数）で推定する。
@@ -81,6 +107,10 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
 
     返り値 dict(params_norm, params_abs, trajectory_abs, metrics, cost,
                 means, names, at_bounds)
+
+    注意: 全マルチスタートで least_squares が例外を投げた場合（極めて稀）、
+    best は None のままとなり後続の best.x で AttributeError になる。
+    データが有限で MODELS の初期値・境界が妥当なら通常発生しない。
     """
     cfg = MODELS["capacity_ry"]
     names = cfg["names"]
@@ -102,15 +132,16 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
     fy2_i = interp1d(t_rel, series_slice["fy2"], kind="linear", fill_value="extrapolate")
     ode = make_ode(fx1_i, fx2_i, fy1_i, fy2_i)
 
-    log_obs = [np.log(np.clip(o, 1e-5, None)) for o in obs_norm]
+    log_obs = [np.log(np.clip(o, _LOG_CLIP_MIN, None)) for o in obs_norm]
     n_pts = len(t_rel)
 
     def residuals(params):
+        """4種×n_pts点の対数誤差残差（+ 正則化項）。simulate失敗時は一律ペナルティ。"""
         y = simulate(params, ode, t_rel, init)
         if y is None:
-            base = np.ones(n_pts * 4) * 1e3
+            base = np.full(n_pts * 4, _INTEGRATION_FAILURE_PENALTY)
         else:
-            log_y = np.log(np.clip(y, 1e-5, None))
+            log_y = np.log(np.clip(y, _LOG_CLIP_MIN, None))
             base = np.concatenate([log_y[i] - log_obs[i] for i in range(4)])
         if reg_lambda > 0:
             reg = np.sqrt(reg_lambda) * params[reg_idx]
@@ -123,7 +154,7 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
         g = np.empty(len(guess0))
         for k in range(len(guess0)):
             lo, hi = lower[k], upper[k]
-            if lo > 0 and hi / lo > 50:
+            if lo > 0 and hi / lo > _LOG_UNIFORM_RATIO_THRESHOLD:
                 g[k] = 10 ** rng.uniform(np.log10(lo), np.log10(hi))
             else:
                 g[k] = rng.uniform(lo, hi)
@@ -133,7 +164,7 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
     for s0 in starts:
         try:
             res = least_squares(residuals, s0, bounds=(lower, upper),
-                                method="trf", max_nfev=4000,
+                                method="trf", max_nfev=_MAX_NFEV,
                                 verbose=1 if verbose else 0)
         except Exception:
             continue
@@ -147,7 +178,8 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
 
     at_bounds = []
     for k, nm in enumerate(names):
-        if np.isclose(p[k], lower[k], rtol=1e-3) or np.isclose(p[k], upper[k], rtol=1e-3):
+        if (np.isclose(p[k], lower[k], rtol=_BOUNDS_RTOL)
+                or np.isclose(p[k], upper[k], rtol=_BOUNDS_RTOL)):
             at_bounds.append(nm)
 
     return {
@@ -162,7 +194,8 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
     }
 
 
-def _estimate_worker(seed, series_slice, n_starts, reg_lambda, verbose):
+def _estimate_worker(seed: int, series_slice: dict, n_starts: int,
+                      reg_lambda: float, verbose: bool) -> Optional[dict]:
     """multiprocessing ワーカー: 1 seed 分の estimate() を実行する（モジュールトップレベル、pickle可能）。
 
     例外・異常時は None を返す（呼び出し側でスキップされる）。
@@ -219,8 +252,15 @@ def estimate_robust(series_slice, n_starts=64, reg_lambda=0.0, n_seeds=12, seed0
     return best
 
 
-def _to_absolute(p, means):
-    """正規化パラメータを元の物理スケールに換算。"""
+def _to_absolute(p: np.ndarray, means: np.ndarray) -> dict:
+    """正規化パラメータを元の物理スケール（千トン, 1/年）の物理パラメータへ換算。
+
+    正規化: x_abs = mean_x * x_norm （各種を全期間平均 means で除した空間）。
+    捕食項 L_ij * x_norm * y_norm を絶対空間へ戻すと mean が非対称に効くため、
+    l_ij = L_ij / mean_y（yのみで除す）, c_i/d_i = C_i・mean_y / mean_x
+    （x側の平均で割り、y側の平均を掛ける）という非対称の換算式になる。
+    r_x, r_y は無次元の率（1/年）なのでスケール換算不要でそのまま。
+    """
     mx1, mx2, my1, my2 = means
     r_x1, r_x2, r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2 = p
     return {
@@ -231,8 +271,8 @@ def _to_absolute(p, means):
     }
 
 
-def compute_metrics(traj_abs, obs_abs):
-    """実スケール(千トン)での種別 R^2 / RMSE / NRMSE。"""
+def compute_metrics(traj_abs: np.ndarray, obs_abs: list) -> dict:
+    """実スケール(千トン)での種別 R^2 / RMSE / NRMSE と種横断平均を返す。"""
     labels = ["x1", "x2", "y1", "y2"]
     out = {}
     r2s, nrmses = [], []

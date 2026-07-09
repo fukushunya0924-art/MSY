@@ -26,7 +26,10 @@ _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)                       # msy/ の data_loader（ブリ/サワラ版）
 sys.path.append(os.path.dirname(_here))         # 現行コード/ の model
 
-from data_loader import load_clean_dataframe, get_series, SPECIES_LABELS, KEYS
+from data_loader import (
+    load_clean_dataframe, get_series, SPECIES_LABELS, KEYS,
+    slice_series, regime_masks,
+)
 from model import estimate_robust, make_ode, simulate
 
 plt.rcParams["font.family"] = "sans-serif"
@@ -35,19 +38,14 @@ plt.rcParams["axes.unicode_minus"] = False
 
 N_FINE = 300   # 滑らか描画用の時間グリッド点数
 
+# estimate_robust の探索設定（run_msy.py / diagnose_iwashi.py と同じ方針, Phase 7d）
+N_STARTS_ROBUST = 64
+N_SEEDS_ROBUST = 12
+
 # レジーム別正則化強度（run_msy.py の REG_LAMBDA と同じ方針）:
 #   NLM は 11 点・12 変数で識別性が保てるため正則化不要
 #   LM  は  8 点・12 変数で識別性が弱いため安定化
 REG_LAMBDA = {"NLM": 0.0, "LM": 0.005}
-
-
-def regime_masks(series):
-    y = series["years"]
-    return ((y >= 2006) & (y <= 2016), (y >= 2017) & (y <= 2024))
-
-
-def slice_series(series, mask):
-    return {k: v[mask] for k, v in series.items()}
 
 
 def smooth_trajectory(sl, res, n=N_FINE):
@@ -79,7 +77,8 @@ def main():
     results = {}
     for name, sl in regimes.items():
         reg_lambda = REG_LAMBDA[name]
-        res = estimate_robust(sl, n_starts=64, reg_lambda=reg_lambda, n_seeds=12, seed0=0)
+        res = estimate_robust(sl, n_starts=N_STARTS_ROBUST, reg_lambda=reg_lambda,
+                              n_seeds=N_SEEDS_ROBUST, seed0=0)
         yrs_fine, traj_fine = smooth_trajectory(sl, res)
         results[name] = {"slice": sl, "res": res,
                          "yrs_fine": yrs_fine, "traj_fine": traj_fine}

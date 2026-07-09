@@ -1,14 +1,16 @@
 """
-データ読み込み（4位の組み合わせ用）。
+MSY計算用データ読み込み・レジーム分割ユーティリティ。
 
-スキャン結果4位（平均CV=0.356）:
-  被食者(x): マイワシ x1, カタクチイワシ x2  （LOW: 小型浮魚）
-  捕食者(y): ブリ y1, サワラ y2              （HIGH: 大型魚食魚）
+種構成（Phase 7d で確定, CLAUDE.md参照）:
+  被食者(x): マイワシ x1, ウルメイワシ x2  （小型浮魚, ウルメはカタクチから置換）
+  捕食者(y): ブリ y1, サワラ y2            （大型魚食魚）
 
-1位（ヤリイカ+スルメイカ/ブリ+サワラ）との違いは被食者側のみ。
-捕食者(ブリ・サワラ)を共通にすることで「被食者の選択効果」を切り出せる。
-また被食者(マイワシ・カタクチ)の生物量はブリ・サワラより大きく、
-生物量の順位逆転（捕食者>被食者）が起きないため c1 異常値も解消される見込み。
+被食者(マイワシ・ウルメ)の生物量は捕食者(ブリ・サワラ)より大きく、
+生物量の順位逆転（捕食者>被食者）が起きないため変換効率パラメータ(c1等)の
+非物理的な異常値も回避できる（Phase 4 で確認済み）。
+
+このモジュールは msy/ 配下の run_msy.py・diagnose_iwashi.py・plot_fit_smooth.py
+から共通に使われる「データ読み込み」「レジーム分割（NLM/LM）」を提供する。
 """
 import os
 import numpy as np
@@ -134,6 +136,48 @@ def get_series(df_clean):
         s[k] = bio
         s["f" + k] = np.clip(catch / bio, 0.0, 0.95)
     return s
+
+
+# =============================================================================
+# レジーム分割（NLM / LM）
+# =============================================================================
+# 黒潮大蛇行レジームの年次区分（両端含む）。
+#   NLM: 2006-2016（11年, 戦略的MSYの積分期間 T=10年）
+#   LM : 2017-2024（8年,  戦略的MSYの積分期間 T=7年）
+# run_msy.py / diagnose_iwashi.py / plot_fit_smooth.py で共通して使う。
+NLM_YEARS = (2006, 2016)
+LM_YEARS = (2017, 2024)
+
+
+def slice_series(series, mask):
+    """get_series() の返り値を bool マスクで切り出す（'years' 含む全キーを同じ添字で揃える）。"""
+    return {k: v[mask] for k, v in series.items()}
+
+
+def regime_masks(series):
+    """NLM/LM の bool マスクを (nlm_mask, lm_mask) で返す。両端の年を含む。"""
+    y = series["years"]
+    nlm_mask = (y >= NLM_YEARS[0]) & (y <= NLM_YEARS[1])
+    lm_mask = (y >= LM_YEARS[0]) & (y <= LM_YEARS[1])
+    return nlm_mask, lm_mask
+
+
+def get_regime_T(series_slice):
+    """
+    レジームの全期間 T = 最終年 - 初年（年単位）を返す。
+    NLM(2006-2016, 11年) → T=10、LM(2017-2024, 8年) → T=7。
+    """
+    years = series_slice["years"].astype(float)
+    return float(years[-1] - years[0])
+
+
+def get_regime_X0_norm(series_slice, means):
+    """
+    レジームの初年（t=0）観測資源量から正規化初期値を作る。
+    means は estimate()/estimate_robust() 返り値の 'means'（各種の全期間平均資源量）。
+    """
+    obs_abs_t0 = np.array([float(series_slice[k][0]) for k in KEYS])
+    return obs_abs_t0 / np.asarray(means, dtype=float)
 
 
 if __name__ == "__main__":
