@@ -27,13 +27,18 @@ sys.path.insert(0, _here)                       # msy/ の data_loader（ブリ/
 sys.path.append(os.path.dirname(_here))         # 現行コード/ の model
 
 from data_loader import load_clean_dataframe, get_series, SPECIES_LABELS, KEYS
-from model import estimate, make_ode, simulate
+from model import estimate_robust, make_ode, simulate
 
 plt.rcParams["font.family"] = "sans-serif"
 plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "DejaVu Sans", "Arial", "Heiti TC"]
 plt.rcParams["axes.unicode_minus"] = False
 
 N_FINE = 300   # 滑らか描画用の時間グリッド点数
+
+# レジーム別正則化強度（run_msy.py の REG_LAMBDA と同じ方針）:
+#   NLM は 11 点・12 変数で識別性が保てるため正則化不要
+#   LM  は  8 点・12 変数で識別性が弱いため安定化
+REG_LAMBDA = {"NLM": 0.0, "LM": 0.005}
 
 
 def regime_masks(series):
@@ -71,11 +76,10 @@ def main():
         "NLM": slice_series(series, nlm_mask),
         "LM":  slice_series(series, lm_mask),
     }
-    reg_lambda = 0.01
-
     results = {}
     for name, sl in regimes.items():
-        res = estimate(sl, n_starts=40, reg_lambda=reg_lambda, seed=0)
+        reg_lambda = REG_LAMBDA[name]
+        res = estimate_robust(sl, n_starts=64, reg_lambda=reg_lambda, n_seeds=12, seed0=0)
         yrs_fine, traj_fine = smooth_trajectory(sl, res)
         results[name] = {"slice": sl, "res": res,
                          "yrs_fine": yrs_fine, "traj_fine": traj_fine}

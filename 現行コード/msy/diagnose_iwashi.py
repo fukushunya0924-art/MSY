@@ -24,7 +24,7 @@ sys.path.insert(0, _here)
 sys.path.append(_parent)
 
 from data_loader import load_clean_dataframe, get_series
-from model import estimate
+from model import estimate_robust
 from msy_core import normalize_X0, average_yield, N_EVAL_TRAJ
 
 # -----------------------------------------------------------------------
@@ -277,7 +277,7 @@ def main():
     for rname, sl in regimes_data:
         reg = REG_LAMBDA[rname]
         print(f"  {rname} (reg_lambda={reg}) ...", flush=True)
-        res = estimate(sl, n_starts=N_STARTS, reg_lambda=reg, seed=0)
+        res = estimate_robust(sl, n_starts=64, reg_lambda=reg, n_seeds=12, seed0=0)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")

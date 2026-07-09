@@ -39,7 +39,7 @@ sys.path.insert(0, _here)      # msy_core.py を先頭に
 sys.path.append(_parent)       # 親フォルダの model.py・data_loader.py を後方追加
 
 from data_loader import load_clean_dataframe, get_series, SPECIES_LABELS, KEYS
-from model import estimate
+from model import estimate, estimate_robust
 from msy_core import (
     normalize_X0,
     average_yield,
@@ -65,7 +65,9 @@ NLM_YEARS = (2006, 2016)
 LM_YEARS  = (2017, 2024)
 
 # 推定パラメータ
-N_STARTS   = 40
+N_STARTS   = 64
+# 複数シードで局所解回避。診断でNLM/LMともに良解到達に~12シード必要と判明
+N_SEEDS    = 12
 # レジーム別正則化強度:
 #   NLM は 11 点・12 変数で識別性が保てるため正則化不要（Phase4 で λ>0 だと当てはまり悪化が判明）
 #   LM  は  8 点・12 変数で識別性が弱いため安定化
@@ -632,13 +634,13 @@ def main():
     # ------------------------------------------------------------------
     # Step 1: 各レジームの ODE パラメータ推定
     # ------------------------------------------------------------------
-    print(f"\n[Step 1] ODE パラメータ推定 (n_starts={N_STARTS}, reg_lambda: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']})")
+    print(f"\n[Step 1] ODE パラメータ推定 (n_starts={N_STARTS}, n_seeds={N_SEEDS}, reg_lambda: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']})")
     est_results = {}
     for rname, sl, _ in regimes:
         n_y = len(sl["years"])
         reg = REG_LAMBDA[rname]  # レジーム別に正則化強度を切り替える
         print(f"  推定中: {rname} ({n_y} 年, reg_lambda={reg}) ...", flush=True)
-        res = estimate(sl, n_starts=N_STARTS, reg_lambda=reg, seed=0)
+        res = estimate_robust(sl, n_starts=N_STARTS, reg_lambda=reg, n_seeds=N_SEEDS, seed0=0)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")

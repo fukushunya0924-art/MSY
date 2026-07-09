@@ -19,6 +19,9 @@
   被食者(x): マイワシ x1, カタクチイワシ x2
   捕食者(y): ブリ y1, サワラ y2
 """
+import os
+import functools
+import multiprocessing
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.interpolate import interp1d
@@ -157,6 +160,63 @@ def estimate(series_slice, n_starts=32, reg_lambda=0.0, seed=0, verbose=False):
         "names": names,
         "at_bounds": at_bounds,
     }
+
+
+def _estimate_worker(seed, series_slice, n_starts, reg_lambda, verbose):
+    """multiprocessing ワーカー: 1 seed 分の estimate() を実行する（モジュールトップレベル、pickle可能）。
+
+    例外・異常時は None を返す（呼び出し側でスキップされる）。
+    """
+    try:
+        res = estimate(series_slice, n_starts=n_starts, reg_lambda=reg_lambda,
+                       seed=seed, verbose=verbose)
+    except Exception:
+        return None
+    if res is None:
+        return None
+    res["best_seed"] = seed
+    if verbose:
+        print(f"[seed={seed}] cost={res['cost']:.6f}")
+    return res
+
+
+def estimate_robust(series_slice, n_starts=64, reg_lambda=0.0, n_seeds=12, seed0=0, verbose=False):
+    """
+    複数シードで estimate を並列実行し総コスト最小解を採る。単一シードでは局所解に落ちるため。
+
+    seed0 から seed0+n_seeds-1 まで seed を変えて estimate() を n_seeds 回、
+    multiprocessing.Pool で並列に呼び、res['cost'] が最小の結果を返す。
+    返り値は estimate() と同一形式の dict に加え、最良だったシード番号を
+    res['best_seed'] に格納する（デバッグ用）。
+
+    seed 間は完全独立なため、ワーカー数 min(n_seeds, cpu_count) で並列化する。
+    macOS は spawn 方式のためワーカー関数はモジュールトップレベルの _estimate_worker。
+    あるseedが例外/失敗しても他のseedの結果で継続する（全滅時のみ best=None）。
+    """
+    seeds = list(range(seed0, seed0 + n_seeds))
+    n_workers = max(1, min(n_seeds, os.cpu_count() or 1))
+
+    worker = functools.partial(_estimate_worker, series_slice=series_slice,
+                               n_starts=n_starts, reg_lambda=reg_lambda,
+                               verbose=verbose)
+
+    with multiprocessing.Pool(processes=n_workers) as pool:
+        results = pool.map(worker, seeds)
+
+    best = None
+    for res in results:
+        if res is None:
+            continue
+        if best is None or res["cost"] < best["cost"]:
+            best = res
+
+    if best is None:
+        raise RuntimeError("estimate_robust: 全seedでestimateが失敗しました")
+
+    if verbose:
+        print(f"[estimate_robust] best_seed={best['best_seed']} cost={best['cost']:.6f}")
+
+    return best
 
 
 def _to_absolute(p, means):
