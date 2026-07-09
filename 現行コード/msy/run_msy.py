@@ -16,10 +16,9 @@ NLM(2006-2016) と LM(2017-2024) それぞれについて:
          msy_sensitivity.png, msy_tactical.png)
     → 保存先は このスクリプトと同じフォルダ（現行コード/msy/）
 
-モデル: capacity_ry（12 変数, 主力モデル）または capacity（10 変数）
+モデル: capacity_ry（12 変数, 唯一の現行モデル。capacity/full は廃止済み）
 使い方:
-  python3 run_msy.py               # capacity_ry（デフォルト）
-  python3 run_msy.py capacity      # capacity
+  python3 run_msy.py               # capacity_ry（デフォルト、他の値は不可）
 """
 
 import os
@@ -38,10 +37,13 @@ _parent = os.path.dirname(_here)
 sys.path.insert(0, _here)      # msy_core.py を先頭に
 sys.path.append(_parent)       # 親フォルダの model.py・data_loader.py を後方追加
 
-from data_loader import load_clean_dataframe, get_series, SPECIES_LABELS, KEYS
-from model import estimate
+from data_loader import (
+    load_clean_dataframe, get_series, SPECIES_LABELS, KEYS,
+    NLM_YEARS, LM_YEARS, slice_series, regime_masks,
+    get_regime_T, get_regime_X0_norm,
+)
+from model import estimate_robust
 from msy_core import (
-    normalize_X0,
     average_yield,
     scan_common_rate,
     grid_search_msy,
@@ -61,11 +63,12 @@ plt.rcParams["axes.unicode_minus"] = False
 # -----------------------------------------------------------------------
 # 定数
 # -----------------------------------------------------------------------
-NLM_YEARS = (2006, 2016)
-LM_YEARS  = (2017, 2024)
+# NLM_YEARS / LM_YEARS は data_loader.py で定義（regime_masks 等と一貫させるため）
 
 # 推定パラメータ
-N_STARTS   = 40
+N_STARTS   = 64
+# 複数シードで局所解回避。診断でNLM/LMともに良解到達に~12シード必要と判明
+N_SEEDS    = 12
 # レジーム別正則化強度:
 #   NLM は 11 点・12 変数で識別性が保てるため正則化不要（Phase4 で λ>0 だと当てはまり悪化が判明）
 #   LM  は  8 点・12 変数で識別性が弱いため安定化
@@ -82,44 +85,6 @@ N_GRID_STRATEGIC = 8
 # 絵のカラー
 REGIME_COLORS = {"NLM": "#2166ac", "LM": "#d6604d"}
 SPECIES_COLORS = ["#1b7837", "#762a83", "#e66101", "#4393c3"]
-
-
-# =============================================================================
-# データ準備ユーティリティ
-# =============================================================================
-
-def slice_series(series, mask):
-    """mask で時系列を切り出す（run_estimation.py と同じ）。"""
-    return {k: v[mask] for k, v in series.items()}
-
-
-def regime_masks(series):
-    """NLM / LM マスクを返す（run_estimation.py と同じ）。"""
-    y = series["years"]
-    return ((y >= NLM_YEARS[0]) & (y <= NLM_YEARS[1]),
-            (y >= LM_YEARS[0])  & (y <= LM_YEARS[1]))
-
-
-def get_regime_T(series_slice):
-    """
-    レジームの全期間 T = 最終年 - 初年（年単位）を返す。
-    NLM(11 年) → T=10, LM(8 年) → T=7。
-    """
-    years = series_slice["years"].astype(float)
-    return float(years[-1] - years[0])
-
-
-def get_regime_X0_norm(series_slice, means):
-    """
-    レジームの初年観測資源量から正規化初期値を作成する。
-    """
-    obs_abs_t0 = np.array([
-        float(series_slice["x1"][0]),
-        float(series_slice["x2"][0]),
-        float(series_slice["y1"][0]),
-        float(series_slice["y2"][0]),
-    ])
-    return normalize_X0(obs_abs_t0, means)
 
 
 # =============================================================================
@@ -602,9 +567,13 @@ def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
 # =============================================================================
 
 def main():
+    # model_str は現在 capacity_ry 固定（model.py の MODELS には capacity_ry のみ
+    # 定義されている。capacity/full は2026-06-30に廃止済み、CLAUDE.md参照）。
+    # 出力ファイル名・コンソール表示のラベルとしてのみ使う。
     model_str = sys.argv[1] if len(sys.argv) > 1 else "capacity_ry"
-    if model_str not in ("capacity", "capacity_ry"):
-        print(f"[ERROR] model は capacity または capacity_ry を指定してください（指定: {model_str}）")
+    if model_str != "capacity_ry":
+        print(f"[ERROR] model は capacity_ry のみ指定可能です（指定: {model_str}）。"
+              f"capacity/full モデルは廃止されました。")
         sys.exit(1)
 
     print(_sep())
@@ -632,13 +601,13 @@ def main():
     # ------------------------------------------------------------------
     # Step 1: 各レジームの ODE パラメータ推定
     # ------------------------------------------------------------------
-    print(f"\n[Step 1] ODE パラメータ推定 (n_starts={N_STARTS}, reg_lambda: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']})")
+    print(f"\n[Step 1] ODE パラメータ推定 (n_starts={N_STARTS}, n_seeds={N_SEEDS}, reg_lambda: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']})")
     est_results = {}
     for rname, sl, _ in regimes:
         n_y = len(sl["years"])
         reg = REG_LAMBDA[rname]  # レジーム別に正則化強度を切り替える
         print(f"  推定中: {rname} ({n_y} 年, reg_lambda={reg}) ...", flush=True)
-        res = estimate(sl, n_starts=N_STARTS, reg_lambda=reg, seed=0)
+        res = estimate_robust(sl, n_starts=N_STARTS, reg_lambda=reg, n_seeds=N_SEEDS, seed0=0)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")

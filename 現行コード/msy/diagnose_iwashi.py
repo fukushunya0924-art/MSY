@@ -23,9 +23,12 @@ _parent = os.path.dirname(_here)
 sys.path.insert(0, _here)
 sys.path.append(_parent)
 
-from data_loader import load_clean_dataframe, get_series
-from model import estimate
-from msy_core import normalize_X0, average_yield, N_EVAL_TRAJ
+from data_loader import (
+    load_clean_dataframe, get_series,
+    slice_series, regime_masks, get_regime_T, get_regime_X0_norm,
+)
+from model import estimate_robust
+from msy_core import average_yield, N_EVAL_TRAJ
 
 # -----------------------------------------------------------------------
 # matplotlib 日本語フォント
@@ -37,9 +40,13 @@ plt.rcParams["axes.unicode_minus"] = False
 # -----------------------------------------------------------------------
 # 定数
 # -----------------------------------------------------------------------
-NLM_YEARS  = (2006, 2016)
-LM_YEARS   = (2017, 2024)
-N_STARTS   = 40
+# NLM_YEARS / LM_YEARS は data_loader.py で定義（run_msy.py 等と一貫させるため）
+
+# estimate_robust の探索設定（run_msy.py / plot_fit_smooth.py と同じ方針）:
+#   単一シード・n_starts=40 では局所解に落ちることが判明したため
+#   n_starts=64 × n_seeds=12 の総コスト最小解を採用する（Phase 7d）。
+N_STARTS_ROBUST = 64
+N_SEEDS_ROBUST  = 12
 REG_LAMBDA = {"NLM": 0.0, "LM": 0.005}
 MODEL_STR  = "capacity_ry"
 
@@ -47,7 +54,11 @@ MODEL_STR  = "capacity_ry"
 N_SWEEP    = 20
 F_SWEEP    = np.linspace(0.0, 0.95, N_SWEEP)
 
-# 他種の「現在の制約 MSY f*」（run_msy.py の制約 f* から）
+# 他種の「現在の制約 MSY f*」（run_msy.py の制約版グリッド探索結果からの手動転記）。
+# ⚠ この値は run_msy.py フルラン時点のスナップショットであり自動追従しない。
+#   estimate_robust 移行（Phase 7d, commit a7597fc）やウルメイワシ載せ替え
+#   （Phase 7d, commit 7ef0b36）で推定パラメータが変わっているため、
+#   run_msy.py を再実行した場合は下記の値を最新の制約 f* に更新すること。
 # NLM: (f_x1, f_x2, f_y1, f_y2) = (0.407, 0.543, 0.950, 0.950)
 # LM:  (f_x1, f_x2, f_y1, f_y2) = (0.950, 0.543, 0.950, 0.407)
 F_STAR_FIXED = {
@@ -60,34 +71,6 @@ TRAJ_F_X1 = [0.1, 0.5, 0.95]
 TRAJ_COLORS = ["#2166ac", "#f4a582", "#d6604d"]
 
 REGIME_COLORS = {"NLM": "#2166ac", "LM": "#d6604d"}
-
-
-# -----------------------------------------------------------------------
-# データ準備
-# -----------------------------------------------------------------------
-def slice_series(series, mask):
-    return {k: v[mask] for k, v in series.items()}
-
-
-def regime_masks(series):
-    y = series["years"]
-    return ((y >= NLM_YEARS[0]) & (y <= NLM_YEARS[1]),
-            (y >= LM_YEARS[0])  & (y <= LM_YEARS[1]))
-
-
-def get_regime_T(series_slice):
-    years = series_slice["years"].astype(float)
-    return float(years[-1] - years[0])
-
-
-def get_regime_X0_norm(series_slice, means):
-    obs = np.array([
-        float(series_slice["x1"][0]),
-        float(series_slice["x2"][0]),
-        float(series_slice["y1"][0]),
-        float(series_slice["y2"][0]),
-    ])
-    return normalize_X0(obs, means)
 
 
 # -----------------------------------------------------------------------
@@ -277,7 +260,8 @@ def main():
     for rname, sl in regimes_data:
         reg = REG_LAMBDA[rname]
         print(f"  {rname} (reg_lambda={reg}) ...", flush=True)
-        res = estimate(sl, n_starts=N_STARTS, reg_lambda=reg, seed=0)
+        res = estimate_robust(sl, n_starts=N_STARTS_ROBUST, reg_lambda=reg,
+                              n_seeds=N_SEEDS_ROBUST, seed0=0)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")

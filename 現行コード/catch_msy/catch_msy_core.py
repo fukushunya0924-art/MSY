@@ -69,10 +69,25 @@ DEFAULT_FINAL_RANGE = (0.2, 0.6)
 # 積分の時間解像度（年あたり評価点数）。崩壊検知の安全マージン用。
 N_PER_YEAR = 6
 
+# solve_ivp の相対・絶対誤差許容度（1ペア版 / バッチ版で別値。バッチ版は
+# ペア数が多く精度要求が緩いため atol を少し緩めて速度を稼ぐ）。
+ONE_RTOL, ONE_ATOL = 1e-6, 1e-8
+BATCH_RTOL, BATCH_ATOL = 1e-6, 1e-6
+
 
 def _loguniform(lo, hi, n, rng):
     """[lo, hi] の対数一様サンプル。"""
     return np.exp(rng.uniform(np.log(lo), np.log(hi), size=n))
+
+
+def _geomean(a):
+    """配列 a の幾何平均。空配列なら NaN。"""
+    return float(np.exp(np.mean(np.log(a)))) if a.size else float("nan")
+
+
+def _quantile(a, p):
+    """配列 a の分位点 p。空配列なら NaN。"""
+    return float(np.quantile(a, p)) if a.size else float("nan")
 
 
 def make_catch_interp(years, catch):
@@ -85,7 +100,7 @@ def make_catch_interp(years, catch):
                     bounds_error=False, fill_value=(catch[0], catch[-1]))
 
 
-def integrate_one(r, K, B0, C_func, T, rtol=1e-6, atol=1e-8):
+def integrate_one(r, K, B0, C_func, T, rtol=ONE_RTOL, atol=ONE_ATOL):
     """
     1 ペアぶんの連続 Schaefer を積分。
     戻り値 (survived, B_end):
@@ -117,7 +132,7 @@ def integrate_one(r, K, B0, C_func, T, rtol=1e-6, atol=1e-8):
 
 
 def integrate_batch(r, K, B0, years, catch, n_per_year=N_PER_YEAR,
-                    rtol=1e-6, atol=1e-6):
+                    rtol=BATCH_RTOL, atol=BATCH_ATOL):
     """
     N 成分を 1 回の solve_ivp でまとめて積分（ベクトル化）。
 
@@ -194,12 +209,6 @@ def run_catch_msy(years, catch, resilience,
     k_ok = K_s[viable]
     msy_ok = r_ok * k_ok / 4.0
 
-    def _gmean(a):
-        return float(np.exp(np.mean(np.log(a)))) if a.size else float("nan")
-
-    def _q(a, p):
-        return float(np.quantile(a, p)) if a.size else float("nan")
-
     return {
         "r_prior": (r_lo, r_hi),
         "k_prior": (K_lo, K_hi),
@@ -207,13 +216,13 @@ def run_catch_msy(years, catch, resilience,
         "T": T,
         "n_samples": n_samples,
         "n_viable": int(r_ok.size),
-        "r_geomean": _gmean(r_ok),
-        "r_lo": _q(r_ok, 0.25),
-        "r_hi": _q(r_ok, 0.75),
-        "k_geomean": _gmean(k_ok),
-        "msy_geomean": _gmean(msy_ok),
-        "msy_lo": _q(msy_ok, 0.25),
-        "msy_hi": _q(msy_ok, 0.75),
+        "r_geomean": _geomean(r_ok),
+        "r_lo": _quantile(r_ok, 0.25),
+        "r_hi": _quantile(r_ok, 0.75),
+        "k_geomean": _geomean(k_ok),
+        "msy_geomean": _geomean(msy_ok),
+        "msy_lo": _quantile(msy_ok, 0.25),
+        "msy_hi": _quantile(msy_ok, 0.75),
         "r_viable": r_ok,
         "k_viable": k_ok,
         "msy_viable": msy_ok,

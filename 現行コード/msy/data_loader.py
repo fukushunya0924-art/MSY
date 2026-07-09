@@ -1,14 +1,16 @@
 """
-データ読み込み（4位の組み合わせ用）。
+MSY計算用データ読み込み・レジーム分割ユーティリティ。
 
-スキャン結果4位（平均CV=0.356）:
-  被食者(x): マイワシ x1, カタクチイワシ x2  （LOW: 小型浮魚）
-  捕食者(y): ブリ y1, サワラ y2              （HIGH: 大型魚食魚）
+種構成（Phase 7d で確定, CLAUDE.md参照）:
+  被食者(x): マイワシ x1, ウルメイワシ x2  （小型浮魚, ウルメはカタクチから置換）
+  捕食者(y): ブリ y1, サワラ y2            （大型魚食魚）
 
-1位（ヤリイカ+スルメイカ/ブリ+サワラ）との違いは被食者側のみ。
-捕食者(ブリ・サワラ)を共通にすることで「被食者の選択効果」を切り出せる。
-また被食者(マイワシ・カタクチ)の生物量はブリ・サワラより大きく、
-生物量の順位逆転（捕食者>被食者）が起きないため c1 異常値も解消される見込み。
+被食者(マイワシ・ウルメ)の生物量は捕食者(ブリ・サワラ)より大きく、
+生物量の順位逆転（捕食者>被食者）が起きないため変換効率パラメータ(c1等)の
+非物理的な異常値も回避できる（Phase 4 で確認済み）。
+
+このモジュールは msy/ 配下の run_msy.py・diagnose_iwashi.py・plot_fit_smooth.py
+から共通に使われる「データ読み込み」「レジーム分割（NLM/LM）」を提供する。
 """
 import os
 import numpy as np
@@ -44,8 +46,19 @@ _REG = {
         bio_scale=1/1000, catch_scale=1/1000),
 }
 
-ASSIGN = {"x1": "マイワシ", "x2": "カタクチイワシ", "y1": "ブリ", "y2": "サワラ"}
-SPECIES_LABELS = ["マイワシ (x1)", "カタクチイワシ (x2)", "ブリ (y1)", "サワラ (y2)"]
+# ウルメイワシは資源評価CSV（絶対資源量）が存在しないため、
+# 別の2ファイルを合成して bio / catch を作る（_load_urume 参照）。
+#   資源量指標値（相対値, 平均1） × URUME_MEAN_BIOMASS → 絶対資源量（千トン）
+#   URUME_MEAN_BIOMASS = 172.0 千トン
+#     FRA余剰生産モデルの K×bkfrac / 指標値(1979) を3モデル平均した値。
+#     相対指標値を絶対資源量スケールへ換算するための係数。
+URUME_MEAN_BIOMASS = 172.0
+_URUME_INDEX_FILE = "ウルメイワシ資源量指標値_FRA資源評価2025.csv"
+_URUME_CATCH_FILE = "estat_海面漁業魚種別漁獲量_太平洋12県_1956-2023.csv"
+_URUME_CATCH_COL = "ウルメイワシ"
+
+ASSIGN = {"x1": "マイワシ", "x2": "ウルメイワシ", "y1": "ブリ", "y2": "サワラ"}
+SPECIES_LABELS = ["マイワシ (x1)", "ウルメイワシ (x2)", "ブリ (y1)", "サワラ (y2)"]
 KEYS = ["x1", "x2", "y1", "y2"]
 
 
@@ -63,8 +76,51 @@ def _load_one(name):
     return out.dropna()
 
 
+def _load_urume():
+    """
+    ウルメイワシ専用ロード: 資源量指標値CSV × 漁獲量CSV(e-stat太平洋12県) を合成。
+
+    bio_ウルメイワシ（千トン） = 資源量指標値 × URUME_MEAN_BIOMASS   （年 1979-2024）
+    catch_ウルメイワシ（千トン） = e-stat太平洋12県「ウルメイワシ」列 ÷1000  （年 1956-2023）
+
+    e-statは2023年までのため、2024年の漁獲量は2023年の値を持ち越す（端点保持）。
+    """
+    data_dir = _data_dir()
+
+    idx = pd.read_csv(os.path.join(data_dir, _URUME_INDEX_FILE))
+    idx["年"] = pd.to_numeric(idx["年"], errors="coerce")
+    idx["資源量指標値"] = pd.to_numeric(idx["資源量指標値"], errors="coerce")
+    idx = idx.dropna()
+    bio = idx[["年"]].copy()
+    bio["bio_ウルメイワシ"] = idx["資源量指標値"].astype(float) * URUME_MEAN_BIOMASS
+
+    catch_df = pd.read_csv(os.path.join(data_dir, _URUME_CATCH_FILE), encoding="utf-8-sig")
+    catch_df = catch_df.rename(columns={catch_df.columns[0]: "年"})
+    catch_df["年"] = pd.to_numeric(catch_df["年"], errors="coerce")
+    catch_df[_URUME_CATCH_COL] = pd.to_numeric(catch_df[_URUME_CATCH_COL], errors="coerce")
+    catch_df = catch_df.dropna(subset=["年", _URUME_CATCH_COL])
+    catch = catch_df[["年"]].copy()
+    catch["catch_ウルメイワシ"] = catch_df[_URUME_CATCH_COL].astype(float) / 1000.0
+
+    # 2024年の漁獲量欠測 → 2023年の値を持ち越す（端点保持）
+    last_year = int(catch["年"].max())
+    if bio["年"].max() > last_year:
+        carry = catch.loc[catch["年"] == last_year, "catch_ウルメイワシ"].iloc[0]
+        for y in bio.loc[bio["年"] > last_year, "年"]:
+            catch = pd.concat(
+                [catch, pd.DataFrame({"年": [y], "catch_ウルメイワシ": [carry]})],
+                ignore_index=True,
+            )
+
+    out = bio.merge(catch, on="年")
+    return out.dropna().sort_values("年").reset_index(drop=True)
+
+
 def load_clean_dataframe():
-    dfs = [_load_one(ASSIGN[k]) for k in KEYS]
+    dfs = []
+    for k in KEYS:
+        name = ASSIGN[k]
+        dfs.append(_load_urume() if name == "ウルメイワシ" else _load_one(name))
     merged = dfs[0]
     for d in dfs[1:]:
         merged = merged.merge(d, on="年")
@@ -80,6 +136,48 @@ def get_series(df_clean):
         s[k] = bio
         s["f" + k] = np.clip(catch / bio, 0.0, 0.95)
     return s
+
+
+# =============================================================================
+# レジーム分割（NLM / LM）
+# =============================================================================
+# 黒潮大蛇行レジームの年次区分（両端含む）。
+#   NLM: 2006-2016（11年, 戦略的MSYの積分期間 T=10年）
+#   LM : 2017-2024（8年,  戦略的MSYの積分期間 T=7年）
+# run_msy.py / diagnose_iwashi.py / plot_fit_smooth.py で共通して使う。
+NLM_YEARS = (2006, 2016)
+LM_YEARS = (2017, 2024)
+
+
+def slice_series(series, mask):
+    """get_series() の返り値を bool マスクで切り出す（'years' 含む全キーを同じ添字で揃える）。"""
+    return {k: v[mask] for k, v in series.items()}
+
+
+def regime_masks(series):
+    """NLM/LM の bool マスクを (nlm_mask, lm_mask) で返す。両端の年を含む。"""
+    y = series["years"]
+    nlm_mask = (y >= NLM_YEARS[0]) & (y <= NLM_YEARS[1])
+    lm_mask = (y >= LM_YEARS[0]) & (y <= LM_YEARS[1])
+    return nlm_mask, lm_mask
+
+
+def get_regime_T(series_slice):
+    """
+    レジームの全期間 T = 最終年 - 初年（年単位）を返す。
+    NLM(2006-2016, 11年) → T=10、LM(2017-2024, 8年) → T=7。
+    """
+    years = series_slice["years"].astype(float)
+    return float(years[-1] - years[0])
+
+
+def get_regime_X0_norm(series_slice, means):
+    """
+    レジームの初年（t=0）観測資源量から正規化初期値を作る。
+    means は estimate()/estimate_robust() 返り値の 'means'（各種の全期間平均資源量）。
+    """
+    obs_abs_t0 = np.array([float(series_slice[k][0]) for k in KEYS])
+    return obs_abs_t0 / np.asarray(means, dtype=float)
 
 
 if __name__ == "__main__":

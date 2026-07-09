@@ -1,12 +1,22 @@
-"""カタクチイワシ漁獲量の推移プロット（太平洋12県版, 1956-2023）。"""
-import matplotlib.pyplot as plt
+"""カタクチイワシ漁獲量の推移プロット（太平洋12県版, 1956-2023）。
 
-from catch_data_loader import get_catch_series, SPECIES_LABELS
+参考用スクリプト: 主対象4種（MAIN_KEYS）からはカタクチはウルメイワシに
+置換済み（Phase 7d, 2026-07-07）だが、置換前の検討資料としてカタクチ単独の
+時系列を確認できるよう残す。
+"""
+import os
+import sys
+
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)
+
+from catch_data_loader import get_catch_series, SPECIES_LABELS, setup_japanese_plot_style
 
 KEY = "anchovy"
+
+plt = setup_japanese_plot_style()
 years, catch = get_catch_series(KEY)
 
-plt.rcParams["font.family"] = "Hiragino Sans"
 fig, ax = plt.subplots(figsize=(10, 5))
 ax.plot(years, catch, marker="o", markersize=3, linewidth=1.2, color="tab:blue")
 ax.set_xlabel("年")
@@ -15,6 +25,6 @@ ax.set_title(f"{SPECIES_LABELS[KEY]} 漁獲量の推移（太平洋12県, {years
 ax.grid(alpha=0.3)
 fig.tight_layout()
 
-out_path = "anchovy_catch_timeseries.png"
+out_path = os.path.join(_here, "anchovy_catch_timeseries.png")
 fig.savefig(out_path, dpi=150)
 print(f"保存: {out_path}")

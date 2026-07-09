@@ -24,19 +24,15 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)
 
-from catch_data_loader import get_catch_series, SPECIES_LABELS, MAIN_KEYS
+from catch_data_loader import (get_catch_series, SPECIES_LABELS, MAIN_KEYS,
+                                setup_japanese_plot_style, parse_species_args)
 from catch_msy_core import run_catch_msy, SPECIES_RESILIENCE, DEFAULT_FINAL_RANGE
 
-plt.rcParams["font.family"] = "sans-serif"
-plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "DejaVu Sans", "Arial", "Heiti TC"]
-plt.rcParams["axes.unicode_minus"] = False
+plt = setup_japanese_plot_style()
 
 
 # 魚種ごとの終端枯渇度レンジ（Table1標準ルール。マイワシのみ例外）
@@ -116,8 +112,7 @@ def plot_overview(results, out_path):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a in SPECIES_LABELS]
-    keys = args if args else MAIN_KEYS
+    keys = parse_species_args(sys.argv[1:], default_keys=MAIN_KEYS)
     results = run_all(keys)
     print_table(results)
     out = os.path.join(_here, "catch_msy_overview.png")
