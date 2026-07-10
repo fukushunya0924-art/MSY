@@ -42,7 +42,9 @@ from data_loader import (
     NLM_YEARS, LM_YEARS, slice_series, regime_masks,
     get_regime_T, get_regime_X0_norm,
 )
-from model import estimate_robust
+from estimate_cache import (
+    N_STARTS, N_SEEDS, REG_LAMBDA, estimate_regime, save_estimates,
+)
 from msy_core import (
     average_yield,
     scan_common_rate,
@@ -65,14 +67,8 @@ plt.rcParams["axes.unicode_minus"] = False
 # -----------------------------------------------------------------------
 # NLM_YEARS / LM_YEARS は data_loader.py で定義（regime_masks 等と一貫させるため）
 
-# 推定パラメータ
-N_STARTS   = 64
-# 複数シードで局所解回避。診断でNLM/LMともに良解到達に~12シード必要と判明
-N_SEEDS    = 12
-# レジーム別正則化強度:
-#   NLM は 11 点・12 変数で識別性が保てるため正則化不要（Phase4 で λ>0 だと当てはまり悪化が判明）
-#   LM  は  8 点・12 変数で識別性が弱いため安定化
-REG_LAMBDA = {"NLM": 0.0, "LM": 0.005}
+# 推定パラメータ（N_STARTS / N_SEEDS / REG_LAMBDA）は estimate_cache.py に集約。
+# 推定結果は同モジュールの save_estimates でキャッシュし、plot_fit_smooth.py 等が再利用する。
 
 # -----------------------------------------------------------------------
 # 持続性制約設定（戦略的 MSY にのみ適用）
@@ -605,14 +601,15 @@ def main():
     est_results = {}
     for rname, sl, _ in regimes:
         n_y = len(sl["years"])
-        reg = REG_LAMBDA[rname]  # レジーム別に正則化強度を切り替える
-        print(f"  推定中: {rname} ({n_y} 年, reg_lambda={reg}) ...", flush=True)
-        res = estimate_robust(sl, n_starts=N_STARTS, reg_lambda=reg, n_seeds=N_SEEDS, seed0=0)
+        print(f"  推定中: {rname} ({n_y} 年, reg_lambda={REG_LAMBDA[rname]}) ...", flush=True)
+        res = estimate_regime(sl, rname)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")
         if res["at_bounds"]:
             print(f"    ⚠ 境界張り付き: {', '.join(res['at_bounds'])}")
+
+    print(f"  → 推定結果を保存: {save_estimates(est_results)}")
 
     # ------------------------------------------------------------------
     # Step 2: 戦略的 MSY（レジーム全期間）
