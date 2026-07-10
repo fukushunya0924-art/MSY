@@ -26,6 +26,9 @@ outputs/
 旧版/*.png
 旧版/6.8_old/*.png
 
+# 推定結果キャッシュ（run_msy.py が再生成可能）
+*.pkl
+
 # 旧版の仮想環境とキャッシュ
 旧版/6.8_old/.venv/
 旧版/db_output.txt

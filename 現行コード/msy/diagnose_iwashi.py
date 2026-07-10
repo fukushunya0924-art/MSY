@@ -27,7 +27,7 @@ from data_loader import (
     load_clean_dataframe, get_series,
     slice_series, regime_masks, get_regime_T, get_regime_X0_norm,
 )
-from model import estimate_robust
+from estimate_cache import REG_LAMBDA, load_estimates, estimate_regime
 from msy_core import average_yield, N_EVAL_TRAJ
 
 # -----------------------------------------------------------------------
@@ -42,12 +42,7 @@ plt.rcParams["axes.unicode_minus"] = False
 # -----------------------------------------------------------------------
 # NLM_YEARS / LM_YEARS は data_loader.py で定義（run_msy.py 等と一貫させるため）
 
-# estimate_robust の探索設定（run_msy.py / plot_fit_smooth.py と同じ方針）:
-#   単一シード・n_starts=40 では局所解に落ちることが判明したため
-#   n_starts=64 × n_seeds=12 の総コスト最小解を採用する（Phase 7d）。
-N_STARTS_ROBUST = 64
-N_SEEDS_ROBUST  = 12
-REG_LAMBDA = {"NLM": 0.0, "LM": 0.005}
+# 探索設定（N_STARTS/N_SEEDS/REG_LAMBDA）・推定・キャッシュは estimate_cache.py に集約。
 MODEL_STR  = "capacity_ry"
 
 # f_x1 スイープ
@@ -253,15 +248,19 @@ def main():
     sl_nlm = slice_series(series, nlm_mask)
     sl_lm  = slice_series(series, lm_mask)
 
-    # ODE パラメータ推定
+    # ODE パラメータ推定（run_msy.py が保存したキャッシュがあれば再利用）
     print("\n[Step 1] ODE パラメータ推定")
     regimes_data = [("NLM", sl_nlm), ("LM", sl_lm)]
+    cached = load_estimates()
+    if cached is not None:
+        print("  推定結果のキャッシュを再利用（run_msy.py が保存したもの）")
     est_results = {}
     for rname, sl in regimes_data:
-        reg = REG_LAMBDA[rname]
-        print(f"  {rname} (reg_lambda={reg}) ...", flush=True)
-        res = estimate_robust(sl, n_starts=N_STARTS_ROBUST, reg_lambda=reg,
-                              n_seeds=N_SEEDS_ROBUST, seed0=0)
+        if cached is not None:
+            res = cached[rname]
+        else:
+            print(f"  {rname} (reg_lambda={REG_LAMBDA[rname]}) ...", flush=True)
+            res = estimate_regime(sl, rname)
         est_results[rname] = res
         m = res["metrics"]["overall"]
         print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")
