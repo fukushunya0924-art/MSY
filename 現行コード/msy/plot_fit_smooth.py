@@ -11,7 +11,7 @@
 使い方:
   cd 現行コード/msy && python3 plot_fit_smooth.py
 出力:
-  現行コード/msy/fit_smooth_capacity_ry.png
+  現行コード/msy/outputs/fit_マイワシ_ウルメイワシ_ブリ_サワラ_capacity_ry.png
   コンソールに R²/NRMSE
 """
 import os
@@ -25,6 +25,10 @@ from scipy.interpolate import interp1d
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)                       # msy/ の data_loader（ブリ/サワラ版）
 sys.path.append(os.path.dirname(_here))         # 現行コード/ の model
+
+# PNG出力先: msy/outputs/
+_out_dir = os.path.join(_here, "outputs")
+os.makedirs(_out_dir, exist_ok=True)
 
 from data_loader import (
     load_clean_dataframe, get_series, SPECIES_LABELS, KEYS,
@@ -86,7 +90,7 @@ def main():
               f"平均NRMSE={m['overall']['mean_NRMSE']:.3f}")
 
     plot(results)
-    print(f"\n図を保存: {os.path.join(_here, 'fit_smooth_capacity_ry.png')}")
+    print(f"\n図を保存: {os.path.join(_out_dir, 'fit_マイワシ_ウルメイワシ_ブリ_サワラ_capacity_ry.png')}")
 
 
 def plot(results):
@@ -110,7 +114,7 @@ def plot(results):
     fig.suptitle("マイワシ+ウルメイワシ / ブリ+サワラ — capacity_ry（積分結果の滑らか軌道）",
                  fontsize=14, y=1.003)
     plt.tight_layout()
-    plt.savefig(os.path.join(_here, "fit_smooth_capacity_ry.png"),
+    plt.savefig(os.path.join(_out_dir, "fit_マイワシ_ウルメイワシ_ブリ_サワラ_capacity_ry.png"),
                 dpi=150, bbox_inches="tight")
     plt.close()
 

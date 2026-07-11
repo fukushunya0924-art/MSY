@@ -37,6 +37,10 @@ _parent = os.path.dirname(_here)
 sys.path.insert(0, _here)      # msy_core.py を先頭に
 sys.path.append(_parent)       # 親フォルダの model.py・data_loader.py を後方追加
 
+# PNG出力先: msy/outputs/（種構成＋実装＋制約種別を明記したファイル名で保存）
+_out_dir = os.path.join(_here, "outputs")
+os.makedirs(_out_dir, exist_ok=True)
+
 from data_loader import (
     load_clean_dataframe, get_series, SPECIES_LABELS, KEYS,
     NLM_YEARS, LM_YEARS, slice_series, regime_masks,
@@ -202,7 +206,7 @@ def plot_common_sweep(sweep_results, model_str):
 
     fig.suptitle("共通漁獲率 vs 平均漁獲量（NLM / LM）", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_common_sweep_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_無制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -245,7 +249,7 @@ def plot_grid_scatter(grid_results_nlm, grid_results_lm, model_str):
 
     fig.suptitle(f"グリッド全評価散布図 — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_grid_scatter_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_グリッド散布_無制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -275,7 +279,7 @@ def plot_sensitivity(sens_results_nlm, sens_results_lm, model_str):
 
     fig.suptitle(f"種別感度スイープ（f* 基準 1 次元変化） — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_sensitivity_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_種別感度スイープ_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -318,7 +322,7 @@ def plot_tactical(tac_nlm, tac_lm, model_str):
     ax1.grid(True, ls="--", alpha=0.4)
 
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_tactical_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_戦術的MSY_年次_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -368,7 +372,7 @@ def plot_nlm_lm_comparison(grid_nlm, grid_lm, model_str):
     ax2.grid(axis="y", ls="--", alpha=0.5)
 
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_nlm_lm_comparison_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_NLM_LM比較_無制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -427,7 +431,7 @@ def plot_grid_scatter_constrained(grid_results_nlm, grid_results_lm, model_str):
 
     fig.suptitle(f"制約グリッド散布図（feasible/infeasible 色分け） — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_grid_scatter_constrained_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_グリッド散布_持続可能制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -485,7 +489,7 @@ def plot_common_sweep_constrained(sweep_results, model_str):
 
     fig.suptitle("共通漁獲率スイープ（制約版 feasible 域を緑で表示）", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_common_sweep_constrained_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_持続可能制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -552,7 +556,7 @@ def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
     ax2.grid(axis="y", ls="--", alpha=0.5)
 
     plt.tight_layout()
-    out = os.path.join(_here, f"msy_nlm_lm_comparison_constrained_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_NLM_LM比較_持続可能制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
