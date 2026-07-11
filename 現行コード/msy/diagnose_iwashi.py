@@ -23,6 +23,10 @@ _parent = os.path.dirname(_here)
 sys.path.insert(0, _here)
 sys.path.append(_parent)
 
+# PNG出力先: msy/outputs/
+_out_dir = os.path.join(_here, "outputs")
+os.makedirs(_out_dir, exist_ok=True)
+
 from data_loader import (
     load_clean_dataframe, get_series,
     slice_series, regime_masks, get_regime_T, get_regime_X0_norm,
@@ -227,7 +231,7 @@ def make_plot(sweep_nlm, sweep_lm, est_nlm, est_lm, sl_nlm, sl_lm):
 
     fig.suptitle(f"マイワシ終盤挙動診断（モデル: {MODEL_STR}）", fontsize=14)
     plt.tight_layout()
-    out = os.path.join(_here, "diagnose_iwashi.png")
+    out = os.path.join(_out_dir, f"診断_マイワシ終端挙動_{MODEL_STR}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"\n  → {out}")

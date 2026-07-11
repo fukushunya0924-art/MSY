@@ -19,6 +19,10 @@ import numpy as np
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)
 
+# PNG出力先: catch_msy/outputs/
+_out_dir = os.path.join(_here, "outputs")
+os.makedirs(_out_dir, exist_ok=True)
+
 from catch_data_loader import (get_catch_series, SPECIES_LABELS, MAIN_KEYS,
                                 setup_japanese_plot_style, parse_species_args)
 from catch_msy_core import run_catch_msy, SPECIES_RESILIENCE
@@ -113,7 +117,7 @@ def main():
     keys = parse_species_args(sys.argv[1:], default_keys=MAIN_KEYS)
     data, stats = run_sensitivity(keys)
     print_summary(stats)
-    out = os.path.join(_here, "catch_msy_sensitivity.png")
+    out = os.path.join(_out_dir, "catch_msy_終端レンジ感度_マイワシ_ウルメイワシ_ブリ_サワラ.png")
     plot_sensitivity(data, stats, out)
 
 

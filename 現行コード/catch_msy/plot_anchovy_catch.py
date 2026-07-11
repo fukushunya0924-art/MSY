@@ -10,6 +10,10 @@ import sys
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)
 
+# PNG出力先: catch_msy/outputs/legacy/（置換済み種の参考資料のため隔離）
+_out_dir = os.path.join(_here, "outputs", "legacy")
+os.makedirs(_out_dir, exist_ok=True)
+
 from catch_data_loader import get_catch_series, SPECIES_LABELS, setup_japanese_plot_style
 
 KEY = "anchovy"
@@ -25,6 +29,6 @@ ax.set_title(f"{SPECIES_LABELS[KEY]} 漁獲量の推移（太平洋12県, {years
 ax.grid(alpha=0.3)
 fig.tight_layout()
 
-out_path = os.path.join(_here, "anchovy_catch_timeseries.png")
+out_path = os.path.join(_out_dir, "カタクチイワシ_漁獲量推移_参考_置換前レガシー.png")
 fig.savefig(out_path, dpi=150)
 print(f"保存: {out_path}")
