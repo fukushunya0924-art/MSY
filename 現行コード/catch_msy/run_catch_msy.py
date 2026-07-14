@@ -1,29 +1,28 @@
 """
 連続時間 Catch-MSY のメインスクリプト（単一種4本）。
 
-対象: マイワシ(sardine)・ウルメイワシ(urume)・ブリ(buri)・サワラ(sawara)
-　　　（2026-07-07確定: カタクチ→ウルメイワシ置換）
+対象: マアジ(maaji)・ウルメイワシ(urume)・ブリ(buri)・サワラ(sawara)
+　　　（2026-07-14確定, Phase 11: マイワシ→マアジ置換）
 出力:
   - コンソール: 各種の r 幾何平均・分位点、K、MSY=rK/4、生存ペア数
   - PNG: catch_msy_overview.png（4種の漁獲量時系列＋r/MSY推定の一覧）
 
 教授提案（Phase 7）に基づく位置づけ:
-  被食者 sardine/urume の r は r_x1, r_x2 の外挿値。
+  被食者 maaji/urume の r は r_x1, r_x2 の外挿値。
   捕食者 buri/sawara の r は c1+d1, c2+d2 の実効推定値（解釈A）。
 
 終端枯渇度レンジは魚種ごとに Froese Table1 の標準ルール（終端年 catch/max 比）
-で個別に選ぶ（FINAL_RANGE_BY_SPECIES）。マイワシのみ標準ルールのレンジで
-生存ペアが0（ブーム・バスト構造のため、Phase 5b/7c で既知）なので、
-唯一解ける高レンジ[0.6,0.95]を暫定採用。
+で個別に選ぶ（FINAL_RANGE_BY_SPECIES）。マアジは FRA catch(1982-2024) で
+終端/max=0.29 のため標準ルール[0.01,0.4]で解ける（マイワシで必要だった
+高レンジ例外[0.6,0.95]は不要になった）。
 
 使い方:
   python3 run_catch_msy.py                 # 4種すべて・種別既定レンジ
-  python3 run_catch_msy.py sardine buri    # 魚種を指定
+  python3 run_catch_msy.py maaji buri       # 魚種を指定
   python3 run_catch_msy.py --emit-fixed-params
       # 4種を再推定し、現行コード/fixed_params.py に貼り付け可能な _POINT/_CI
       # ブロックを印字（段1: Catch-MSY→制約）。現行値との drift も警告する。
-      # ※ 自動上書きはしない。r_x1（マイワシ）は終端レンジ例外の暫定値で
-      #   教授相談が要るため、貼り替えは人間が判断する。
+      # ※ 自動上書きはしない。貼り替えは人間が判断する。
 """
 import os
 import sys
@@ -48,9 +47,10 @@ from catch_msy_core import run_catch_msy, SPECIES_RESILIENCE, DEFAULT_FINAL_RANG
 plt = setup_japanese_plot_style()
 
 
-# 魚種ごとの終端枯渇度レンジ（Table1標準ルール。マイワシのみ例外）
+# 魚種ごとの終端枯渇度レンジ（Table1標準ルール）
+# maaji: FRA catch(1982-2024) 終端2024=23, max=80 → 終端/max=0.29 <=0.5 → 標準ルール
 FINAL_RANGE_BY_SPECIES = {
-    "sardine": (0.6, 0.95),  # 標準ルール[0.01,0.4]はn=0（ブーム・バスト）→高レンジ暫定採用
+    "maaji":   (0.01, 0.4),
     "urume":   (0.01, 0.4),  # 終端/max=0.42 <=0.5
     "buri":    (0.3, 0.7),   # 終端/max=0.55 >0.5
     "sawara":  (0.01, 0.4),  # 終端/max=0.46 <=0.5
@@ -90,7 +90,7 @@ def print_table(results):
               f"{r['k_geomean']:>9.0f} {r['msy_geomean']:>9.0f}")
     print("-" * 96)
     print("K・MSY の単位は千トン/年。r は 1/年。")
-    print("被食者(マイワシ,ウルメイワシ)の r → r_x1, r_x2 の外挿値。")
+    print("被食者(マアジ,ウルメイワシ)の r → r_x1, r_x2 の外挿値。")
     print("捕食者(ブリ,サワラ)の r → c1+d1, c2+d2 の実効推定値（解釈A）。")
     print("=" * 96)
 
@@ -125,11 +125,11 @@ def plot_overview(results, out_path):
 
 
 # 段1（Catch-MSY→制約）: Catch-MSY 結果を fixed_params.py の各キーへ写す対応。
-#   被食者 sardine/urume の r → r_x1/r_x2（自然増殖率そのもの）
+#   被食者 maaji/urume の r → r_x1/r_x2（自然増殖率そのもの）
 #   捕食者 buri/sawara の r → S1/S2（= c1+d1 / c2+d2 の実効推定値, 解釈A・Phase7）
-_SPECIES_TO_FIXED = {"sardine": "r_x1", "urume": "r_x2",
+_SPECIES_TO_FIXED = {"maaji": "r_x1", "urume": "r_x2",
                      "buri": "S1", "sawara": "S2"}
-_FIXED_LABEL = {"r_x1": "マイワシ", "r_x2": "ウルメイワシ",
+_FIXED_LABEL = {"r_x1": "マアジ", "r_x2": "ウルメイワシ",
                 "S1": "ブリ c1+d1", "S2": "サワラ c2+d2"}
 _FIXED_ORDER = ["r_x1", "r_x2", "S1", "S2"]
 
@@ -187,8 +187,7 @@ def emit_fixed_params(results):
     if not any_drift:
         print("  差分なし（現行 fixed_params.py は最新の Catch-MSY と一致）。")
     else:
-        print("  ※ 上記を fixed_params.py に貼るかは人間が判断。特に r_x1（マイワシ）は")
-        print("    終端レンジ例外の暫定値で、貼り替えは教授相談の上で。")
+        print("  ※ 上記を fixed_params.py に貼るかは人間が判断。")
 
 
 def main():
@@ -202,7 +201,7 @@ def main():
     print_table(results)
     if emit:
         emit_fixed_params(results)
-    out = os.path.join(_out_dir, "catch_msy_概要_マイワシ_ウルメイワシ_ブリ_サワラ.png")
+    out = os.path.join(_out_dir, "catch_msy_概要_マアジ_ウルメイワシ_ブリ_サワラ.png")
     plot_overview(results, out)
 
 

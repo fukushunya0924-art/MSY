@@ -58,6 +58,7 @@ from estimate_cache import (
     estimate_regime_constrained, save_estimates_constrained,
     load_estimates_constrained,
 )
+from plot_fit_smooth import smooth_trajectory
 import fixed_params
 from msy_core import (
     average_yield,
@@ -216,7 +217,7 @@ def plot_common_sweep(sweep_results, model_str):
 
     fig.suptitle("共通漁獲率 vs 平均漁獲量（NLM / LM）", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_無制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_無制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -259,7 +260,7 @@ def plot_grid_scatter(grid_results_nlm, grid_results_lm, model_str):
 
     fig.suptitle(f"グリッド全評価散布図 — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_グリッド散布_無制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_グリッド散布_無制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -289,7 +290,7 @@ def plot_sensitivity(sens_results_nlm, sens_results_lm, model_str):
 
     fig.suptitle(f"種別感度スイープ（f* 基準 1 次元変化） — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_種別感度スイープ_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_種別感度スイープ_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -332,7 +333,7 @@ def plot_tactical(tac_nlm, tac_lm, model_str):
     ax1.grid(True, ls="--", alpha=0.4)
 
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_戦術的MSY_年次_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_戦術的MSY_年次_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -382,7 +383,7 @@ def plot_nlm_lm_comparison(grid_nlm, grid_lm, model_str):
     ax2.grid(axis="y", ls="--", alpha=0.5)
 
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_NLM_LM比較_無制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_NLM_LM比較_無制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -441,7 +442,7 @@ def plot_grid_scatter_constrained(grid_results_nlm, grid_results_lm, model_str):
 
     fig.suptitle(f"制約グリッド散布図（feasible/infeasible 色分け） — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_グリッド散布_持続可能制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_グリッド散布_持続可能制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -499,7 +500,7 @@ def plot_common_sweep_constrained(sweep_results, model_str):
 
     fig.suptitle("共通漁獲率スイープ（制約版 feasible 域を緑で表示）", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_持続可能制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_持続可能制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -566,7 +567,40 @@ def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
     ax2.grid(axis="y", ls="--", alpha=0.5)
 
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_NLM_LM比較_持続可能制約_マイワシ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_NLM_LM比較_持続可能制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  → {out}")
+
+
+def plot_fit(est_results, regimes, model_str, constrained):
+    """推定フィット図（実データ vs 積分軌道）を保存する。Step1推定の直後に毎回呼ばれる。
+
+    constrained=True なら制約推定（赤線）、False なら自由推定（青線）の配色・
+    ファイル名で分岐する（_plot_fit_constrained.py / plot_fit_smooth.py と同等）。
+    """
+    color = "r-" if constrained else "b-"
+    fig, axes = plt.subplots(4, 2, figsize=(14, 16))
+    for col, (rname, sl, _) in enumerate(regimes):
+        res = est_results[rname]
+        years_fine, traj_fine = smooth_trajectory(sl, res)
+        years = sl["years"]
+        for row in range(4):
+            ax = axes[row, col]
+            ax.plot(years, sl[KEYS[row]], "ko", ms=7, label="実データ", zorder=5)
+            ax.plot(years_fine, traj_fine[row], color, lw=2.2,
+                    label=f"推定 R²={res['metrics'][KEYS[row]]['R2']:.2f} "
+                          f"NRMSE={res['metrics'][KEYS[row]]['NRMSE']:.2f}")
+            ax.set_title(f"{rname}: {SPECIES_LABELS[row]}")
+            ax.set_ylabel("資源量（千トン）")
+            ax.grid(True, ls="--", alpha=0.5)
+            ax.legend(fontsize=8)
+    tag = "【制約推定】" if constrained else ""
+    fig.suptitle(f"{tag}マアジ+ウルメイワシ / ブリ+サワラ — {model_str}（積分結果の滑らか軌道）",
+                 fontsize=14, y=1.003)
+    plt.tight_layout()
+    suffix = "_制約_" if constrained else "_"
+    out = os.path.join(_out_dir, f"fit{suffix}マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -752,6 +786,7 @@ def main():
     # Step 4: PNG 出力
     # ------------------------------------------------------------------
     print(f"\n[Step 4] PNG 出力")
+    plot_fit(est_results, regimes, model_str, constrained)
     plot_sensitivity(sens_res_list[0], sens_res_list[1], model_str)
     plot_tactical(tactical["NLM"], tactical["LM"], model_str)
     plot_grid_scatter_constrained(grid_res_list[0], grid_res_list[1], model_str)

@@ -53,6 +53,7 @@ SPECIES_RESILIENCE = {
     "squid":    "high",    # スルメイカ
     "pollock":  "medium",  # スケトウダラ
     "urume":    "high",    # ウルメイワシ（マイワシ属に準ずる）
+    "maaji":    "medium",  # マアジ（アジ類, medium resilience）
 }
 
 # K 事前レンジ = [K_MULT_LO × max(C), K_MULT_HI × max(C)]（log-uniform）

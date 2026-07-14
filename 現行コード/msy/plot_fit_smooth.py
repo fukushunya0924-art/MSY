@@ -5,13 +5,13 @@
 折れ線（カクカク）になっていた。ここでは推定後に細かい時間グリッド
 (t_eval=linspace(t0, tend, N_FINE)) で ODE を解き直し、滑らかな曲線1本を描く。
 
-  被食者(x): マイワシ x1, ウルメイワシ x2
+  被食者(x): マアジ x1, ウルメイワシ x2
   捕食者(y): ブリ y1, サワラ y2   （capacity_ry 12変数）
 
 使い方:
   cd 現行コード/msy && python3 plot_fit_smooth.py
 出力:
-  現行コード/msy/outputs/fit_マイワシ_ウルメイワシ_ブリ_サワラ_capacity_ry.png
+  現行コード/msy/outputs/fit_マアジ_ウルメイワシ_ブリ_サワラ_capacity_ry.png
   コンソールに R²/NRMSE
 """
 import os
@@ -90,7 +90,7 @@ def main():
               f"平均NRMSE={m['overall']['mean_NRMSE']:.3f}")
 
     plot(results)
-    print(f"\n図を保存: {os.path.join(_out_dir, 'fit_マイワシ_ウルメイワシ_ブリ_サワラ_capacity_ry.png')}")
+    print(f"\n図を保存: {os.path.join(_out_dir, 'fit_マアジ_ウルメイワシ_ブリ_サワラ_capacity_ry.png')}")
 
 
 def plot(results):
@@ -111,10 +111,10 @@ def plot(results):
             ax.set_ylabel("資源量（千トン）")
             ax.grid(True, ls="--", alpha=0.5)
             ax.legend(fontsize=8)
-    fig.suptitle("マイワシ+ウルメイワシ / ブリ+サワラ — capacity_ry（積分結果の滑らか軌道）",
+    fig.suptitle("マアジ+ウルメイワシ / ブリ+サワラ — capacity_ry（積分結果の滑らか軌道）",
                  fontsize=14, y=1.003)
     plt.tight_layout()
-    plt.savefig(os.path.join(_out_dir, "fit_マイワシ_ウルメイワシ_ブリ_サワラ_capacity_ry.png"),
+    plt.savefig(os.path.join(_out_dir, "fit_マアジ_ウルメイワシ_ブリ_サワラ_capacity_ry.png"),
                 dpi=150, bbox_inches="tight")
     plt.close()
 
