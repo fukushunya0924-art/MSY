@@ -19,6 +19,11 @@
 使い方:
   python3 run_catch_msy.py                 # 4種すべて・種別既定レンジ
   python3 run_catch_msy.py sardine buri    # 魚種を指定
+  python3 run_catch_msy.py --emit-fixed-params
+      # 4種を再推定し、現行コード/fixed_params.py に貼り付け可能な _POINT/_CI
+      # ブロックを印字（段1: Catch-MSY→制約）。現行値との drift も警告する。
+      # ※ 自動上書きはしない。r_x1（マイワシ）は終端レンジ例外の暫定値で
+      #   教授相談が要るため、貼り替えは人間が判断する。
 """
 import os
 import sys
@@ -27,6 +32,10 @@ import numpy as np
 
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)
+# fixed_params.py（親フォルダ 現行コード/）を drift チェック用に import できるようにする。
+_parent = os.path.dirname(_here)
+if _parent not in sys.path:
+    sys.path.append(_parent)
 
 # PNG出力先: catch_msy/outputs/
 _out_dir = os.path.join(_here, "outputs")
@@ -115,10 +124,84 @@ def plot_overview(results, out_path):
     print(f"[saved] {out_path}")
 
 
+# 段1（Catch-MSY→制約）: Catch-MSY 結果を fixed_params.py の各キーへ写す対応。
+#   被食者 sardine/urume の r → r_x1/r_x2（自然増殖率そのもの）
+#   捕食者 buri/sawara の r → S1/S2（= c1+d1 / c2+d2 の実効推定値, 解釈A・Phase7）
+_SPECIES_TO_FIXED = {"sardine": "r_x1", "urume": "r_x2",
+                     "buri": "S1", "sawara": "S2"}
+_FIXED_LABEL = {"r_x1": "マイワシ", "r_x2": "ウルメイワシ",
+                "S1": "ブリ c1+d1", "S2": "サワラ c2+d2"}
+_FIXED_ORDER = ["r_x1", "r_x2", "S1", "S2"]
+
+
+def emit_fixed_params(results):
+    """Catch-MSY 結果を fixed_params.py 貼り付け形で印字し、現行値との drift を警告する。
+
+    results は 4魚種（sardine, urume, buri, sawara）を含む必要がある（1つでも欠けると
+    完全な _POINT/_CI ブロックを作れないので、その旨を告げて何もしない）。
+    点推定は r_geomean、区間は (r_lo, r_hi)=25/75%点を採用（現行 fixed_params.py と同じ）。
+    自動書き込みは一切しない。印字と警告のみ。
+    """
+    missing = [sp for sp in _SPECIES_TO_FIXED if sp not in results]
+    if missing:
+        print(f"\n[emit] 4魚種すべてが必要です（不足: {missing}）。"
+              f"引数なしの `python3 run_catch_msy.py --emit-fixed-params` を実行してください。")
+        return
+
+    point = {_SPECIES_TO_FIXED[sp]: results[sp]["r_geomean"] for sp in _SPECIES_TO_FIXED}
+    ci = {_SPECIES_TO_FIXED[sp]: (results[sp]["r_lo"], results[sp]["r_hi"])
+          for sp in _SPECIES_TO_FIXED}
+
+    print()
+    print("=" * 72)
+    print("fixed_params.py 貼り付け用ブロック（Catch-MSY 太平洋12県 の最新推定）")
+    print("=" * 72)
+    print("_POINT = {")
+    for key in _FIXED_ORDER:
+        qkey = '"%s":' % key
+        print(f"    {qkey:<7} {point[key]:.3f},  # {_FIXED_LABEL[key]}")
+    print("}")
+    print()
+    print("_CI = {")
+    for key in _FIXED_ORDER:
+        lo, hi = ci[key]
+        qkey = '"%s":' % key
+        print(f"    {qkey:<7} ({lo:.3f}, {hi:.3f}),")
+    print("}")
+    print("=" * 72)
+
+    # drift チェック: 現行 fixed_params.py と 3桁で突き合わせ（貼れば変わる箇所を可視化）。
+    import fixed_params
+    cur_point = fixed_params.get_point()
+    print("[drift チェック] 現行 fixed_params.py との差分（3桁比較）:")
+    any_drift = False
+    for key in _FIXED_ORDER:
+        cur, new = cur_point[key], point[key]
+        cur_lo, cur_hi = fixed_params.get_ci(key)
+        new_lo, new_hi = ci[key]
+        if (round(new, 3) != round(cur, 3) or round(new_lo, 3) != round(cur_lo, 3)
+                or round(new_hi, 3) != round(cur_hi, 3)):
+            any_drift = True
+            print(f"  ⚠ {key:<4}: 現行 {cur:.3f} [{cur_lo:.3f},{cur_hi:.3f}]  →  "
+                  f"新 {new:.3f} [{new_lo:.3f},{new_hi:.3f}]")
+    if not any_drift:
+        print("  差分なし（現行 fixed_params.py は最新の Catch-MSY と一致）。")
+    else:
+        print("  ※ 上記を fixed_params.py に貼るかは人間が判断。特に r_x1（マイワシ）は")
+        print("    終端レンジ例外の暫定値で、貼り替えは教授相談の上で。")
+
+
 def main():
-    keys = parse_species_args(sys.argv[1:], default_keys=MAIN_KEYS)
+    args = sys.argv[1:]
+    emit = "--emit-fixed-params" in args
+    species_args = [a for a in args if not a.startswith("--")]
+    # emit は完全な _POINT/_CI ブロックを作るため4魚種を固定で回す（種指定は無視）。
+    keys = list(MAIN_KEYS) if emit else parse_species_args(species_args,
+                                                           default_keys=MAIN_KEYS)
     results = run_all(keys)
     print_table(results)
+    if emit:
+        emit_fixed_params(results)
     out = os.path.join(_out_dir, "catch_msy_概要_マイワシ_ウルメイワシ_ブリ_サワラ.png")
     plot_overview(results, out)
 
