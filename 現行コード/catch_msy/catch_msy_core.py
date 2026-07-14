@@ -56,10 +56,14 @@ SPECIES_RESILIENCE = {
 }
 
 # K 事前レンジ = [K_MULT_LO × max(C), K_MULT_HI × max(C)]（log-uniform）
+# 原論文 (Martell & Froese 2013) は下限=max(C)、上限=100×max(C)。
 K_MULT_LO = 1.0
-K_MULT_HI = 60.0
+K_MULT_HI = 100.0
 
-# 初期枯渇度 B0/K 事前レンジ（log-uniform）
+# 初期枯渇度 B0/K 事前レンジ（uniform）
+# 原論文は k0 を下限〜上限で 0.05 刻みのグリッド探索するが、本実装は
+# Monte Carlo サンプリングに統一するため、同じレンジを一様分布からサンプルする
+# （対数一様ではない: 原論文のグリッドが線形刻みのため）。
 B0_FRAC_RANGE = (0.5, 0.9)
 
 # 既定サンプル数・終端判定レンジ
@@ -194,7 +198,7 @@ def run_catch_msy(years, catch, resilience,
     # 事前サンプル
     r_s = _loguniform(r_lo, r_hi, n_samples, rng)
     K_s = _loguniform(K_lo, K_hi, n_samples, rng)
-    b0f = _loguniform(b0_frac_range[0], b0_frac_range[1], n_samples, rng)
+    b0f = rng.uniform(b0_frac_range[0], b0_frac_range[1], size=n_samples)
     B0_s = b0f * K_s
 
     # ベクトル化バッチ積分（1 回の solve_ivp で全ペア）

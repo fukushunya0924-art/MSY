@@ -18,7 +18,13 @@ NLM(2006-2016) と LM(2017-2024) それぞれについて:
 
 モデル: capacity_ry（12 変数, 唯一の現行モデル。capacity/full は廃止済み）
 使い方:
-  python3 run_msy.py               # capacity_ry（デフォルト、他の値は不可）
+  python3 run_msy.py               # 自由推定（12変数）→ MSY（従来どおり）
+  python3 run_msy.py --constrained # 制約推定（8変数, Catch-MSY確定値 r_x1/r_x2/
+                                   #   c1+d1/c2+d2 を固定）→ MSY
+    → Step 1 の推定器だけ estimate_regime_constrained に差し替わり、Step 2〜5
+      （MSY計算・作図）は無改修で共用。出力は *_capacity_ry_constrained.png に分離。
+      固定値は fixed_params.py（Catch-MSY 太平洋12県の確定値）が単一の真実の源。
+      初回は約11分（診断予算 16×8, Phase 8実測）、以降は署名一致でキャッシュ再利用。
 """
 
 import os
@@ -48,7 +54,11 @@ from data_loader import (
 )
 from estimate_cache import (
     N_STARTS, N_SEEDS, REG_LAMBDA, estimate_regime, save_estimates,
+    N_STARTS_C, N_SEEDS_C, REG_LAMBDA_C,
+    estimate_regime_constrained, save_estimates_constrained,
+    load_estimates_constrained,
 )
+import fixed_params
 from msy_core import (
     average_yield,
     scan_common_rate,
@@ -570,15 +580,23 @@ def main():
     # model_str は現在 capacity_ry 固定（model.py の MODELS には capacity_ry のみ
     # 定義されている。capacity/full は2026-06-30に廃止済み、CLAUDE.md参照）。
     # 出力ファイル名・コンソール表示のラベルとしてのみ使う。
-    model_str = sys.argv[1] if len(sys.argv) > 1 else "capacity_ry"
+    # 引数解析: 位置引数 model（capacity_ry のみ）と --constrained フラグ。
+    _args = sys.argv[1:]
+    constrained = "--constrained" in _args
+    _positional = [a for a in _args if not a.startswith("--")]
+    model_str = _positional[0] if _positional else "capacity_ry"
     if model_str != "capacity_ry":
         print(f"[ERROR] model は capacity_ry のみ指定可能です（指定: {model_str}）。"
               f"capacity/full モデルは廃止されました。")
         sys.exit(1)
+    # 制約モードでは出力ファイル名・図タイトル・コンソールのラベルを分離する。
+    # Step 2〜5 は model_str を「ラベル」としてしか使わないため、これで無改修共用できる。
+    if constrained:
+        model_str = "capacity_ry_constrained"
 
     print(_sep())
-    print(f"MSY 計算  モデル: {model_str}  "
-          f"正則化: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']}  "
+    _mode = "制約推定(8変数, Catch-MSY確定値固定)" if constrained else "自由推定(12変数)"
+    print(f"MSY 計算  モデル: {model_str}  推定: {_mode}  "
           f"戦略グリッド: {N_GRID_STRATEGIC}^4={N_GRID_STRATEGIC**4} 評価  "
           f"戦術グリッド: {N_GRID}^4={N_GRID**4} 評価")
     print(f"持続性制約: scope={SUSTAIN_CFG['scope']}  mode={SUSTAIN_CFG['mode']}  "
@@ -600,20 +618,60 @@ def main():
 
     # ------------------------------------------------------------------
     # Step 1: 各レジームの ODE パラメータ推定
+    #   constrained=False: 12自由変数（従来）
+    #   constrained=True : 8自由変数（Catch-MSY確定値 r_x1/r_x2/c1+d1/c2+d2 を固定）
+    # 以降の Step 2〜5 は est_results の params_norm/means のみ使うので、どちらでも共用。
     # ------------------------------------------------------------------
-    print(f"\n[Step 1] ODE パラメータ推定 (n_starts={N_STARTS}, n_seeds={N_SEEDS}, reg_lambda: NLM={REG_LAMBDA['NLM']}  LM={REG_LAMBDA['LM']})")
-    est_results = {}
-    for rname, sl, _ in regimes:
-        n_y = len(sl["years"])
-        print(f"  推定中: {rname} ({n_y} 年, reg_lambda={REG_LAMBDA[rname]}) ...", flush=True)
-        res = estimate_regime(sl, rname)
-        est_results[rname] = res
-        m = res["metrics"]["overall"]
-        print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")
-        if res["at_bounds"]:
-            print(f"    ⚠ 境界張り付き: {', '.join(res['at_bounds'])}")
+    if constrained:
+        fx = fixed_params.get_point()
+        print(f"\n[Step 1] 制約付き ODE 推定（8自由変数, Catch-MSY確定値を固定）")
+        print(f"    固定値: r_x1={fx['r_x1']:.3f}  r_x2={fx['r_x2']:.3f}  "
+              f"S1(c1+d1)={fx['S1']:.3f}  S2(c2+d2)={fx['S2']:.3f}")
+        print(f"    予算  : NLM {N_STARTS_C['NLM']}×{N_SEEDS_C['NLM']}  "
+              f"LM {N_STARTS_C['LM']}×{N_SEEDS_C['LM']}  "
+              f"reg_lambda NLM={REG_LAMBDA_C['NLM']} LM={REG_LAMBDA_C['LM']}")
+        est_results = load_estimates_constrained()
+        if est_results is not None:
+            print("  → 有効なキャッシュを再利用（固定値・予算が一致）")
+            for rname, _, _ in regimes:
+                res = est_results[rname]
+                m = res["metrics"]["overall"]
+                th = res["params_free"]
+                bnd = f"  ⚠境界: {', '.join(res['at_bounds'])}" if res["at_bounds"] else ""
+                print(f"    {rname}: 平均NRMSE={m['mean_NRMSE']:.3f}  "
+                      f"θ1={th[6]:.3f} θ2={th[7]:.3f}{bnd}")
+        else:
+            est_results = {}
+            for rname, sl, _ in regimes:
+                n_y = len(sl["years"])
+                print(f"  推定中: {rname} ({n_y} 年, {N_STARTS_C[rname]}×{N_SEEDS_C[rname]}, "
+                      f"reg_lambda={REG_LAMBDA_C[rname]}) ...", flush=True)
+                res = estimate_regime_constrained(sl, rname)
+                est_results[rname] = res
+                m = res["metrics"]["overall"]
+                th = res["params_free"]
+                print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}  "
+                      f"θ1={th[6]:.3f} θ2={th[7]:.3f}（S の c/d 配分比）")
+                if res["at_bounds"]:
+                    print(f"    ⚠ 境界張り付き: {', '.join(res['at_bounds'])}")
+            print(f"  → 推定結果を保存: {save_estimates_constrained(est_results)}")
+    else:
+        print(f"\n[Step 1] ODE パラメータ推定 （レジーム別設定）"
+              f"\n    NLM: n_starts={N_STARTS['NLM']} n_seeds={N_SEEDS['NLM']} reg_lambda={REG_LAMBDA['NLM']}"
+              f"\n    LM : n_starts={N_STARTS['LM']} n_seeds={N_SEEDS['LM']} reg_lambda={REG_LAMBDA['LM']}")
+        est_results = {}
+        for rname, sl, _ in regimes:
+            n_y = len(sl["years"])
+            print(f"  推定中: {rname} ({n_y} 年, n_starts={N_STARTS[rname]}, "
+                  f"n_seeds={N_SEEDS[rname]}, reg_lambda={REG_LAMBDA[rname]}) ...", flush=True)
+            res = estimate_regime(sl, rname)
+            est_results[rname] = res
+            m = res["metrics"]["overall"]
+            print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}")
+            if res["at_bounds"]:
+                print(f"    ⚠ 境界張り付き: {', '.join(res['at_bounds'])}")
 
-    print(f"  → 推定結果を保存: {save_estimates(est_results)}")
+        print(f"  → 推定結果を保存: {save_estimates(est_results)}")
 
     # ------------------------------------------------------------------
     # Step 2: 戦略的 MSY（レジーム全期間）
