@@ -24,7 +24,7 @@ import numpy as np
 
 
 # 4魚種（被食者2・捕食者2）＋教授候補（サバ類・スルメイカ・スケトウダラ）
-# ＋カタクチ代替候補（ウルメイワシ）も読める
+# ＋カタクチ代替候補（ウルメイワシ）＋マイワシ代替候補（マアジ）も読める
 SPECIES = {
     "sardine": "マイワシ",
     "anchovy": "カタクチイワシ",
@@ -34,6 +34,7 @@ SPECIES = {
     "squid":    "スルメイカ",
     "pollock":  "スケトウダラ",
     "urume":    "ウルメイワシ",
+    "maaji":    "マアジ",
 }
 
 # 表示ラベル（図・表用）
@@ -46,12 +47,13 @@ SPECIES_LABELS = {
     "squid":    "スルメイカ",
     "pollock":  "スケトウダラ",
     "urume":    "ウルメイワシ",
+    "maaji":    "マアジ",
 }
 
 # 主対象（run_catch_msy.py が既定で回す4種）
-# 2026-07-07 確定: 被食者はマイワシ・ウルメイワシ（カタクチ→ウルメ置換）、
-# 捕食者はブリ・サワラ。
-MAIN_KEYS = ["sardine", "urume", "buri", "sawara"]
+# 2026-07-14 確定（Phase 11）: 被食者はマアジ・ウルメイワシ（マイワシ→マアジ置換,
+# 標準ルールで解けない例外[0.6,0.95]を回避するため）、捕食者はブリ・サワラ。
+MAIN_KEYS = ["maaji", "urume", "buri", "sawara"]
 
 # データソース（2026-07-04決定: 太平洋12県版を標準にする）
 #   系群混在を避けるため、太平洋沿岸12県（岩手・宮城・福島・茨城・千葉・静岡・
@@ -104,15 +106,36 @@ def load_catch_table(csv_name=_CSV_NAME):
     return header, rows
 
 
+# マアジは e-stat 太平洋12県の合算CSVに列が無く、FRA資源評価（太平洋系群,
+# 表3-1, 1982-2024）専用CSVを別途持つ。ODE推定（msy/data_loader.py）と
+# 同一の catch データ源にすることで、マイワシで問題になった「Catch-MSYと
+# ODEで漁獲量データが異なる」批判を最初から回避する（Phase 11）。
+_MAAJI_FILE = "マアジ時系列データ_資源量・漁獲量・漁獲係数_FRA資源評価2025.csv"
+
+
+def _get_maaji_catch_series():
+    import pandas as pd
+    df = pd.read_csv(os.path.join(_find_data_dir(), _MAAJI_FILE))
+    df["年"] = pd.to_numeric(df["年"], errors="coerce")
+    df["漁獲量（千トン）"] = pd.to_numeric(df["漁獲量（千トン）"], errors="coerce")
+    df = df.dropna(subset=["年", "漁獲量（千トン）"]).sort_values("年")
+    years = df["年"].values.astype(int)
+    catch = df["漁獲量（千トン）"].values.astype(float)
+    return years, catch
+
+
 def get_catch_series(key, csv_name=_CSV_NAME):
     """
     魚種 key の (years, catch) を返す。
       years : np.ndarray[int]   （欠損年を除いた昇順）
       catch : np.ndarray[float] （千トン）
     csv_name で全国版(_CSV_NATIONAL)にも切替可（既定は太平洋12県版）。
+    maaji のみ e-stat ではなく FRA資源評価専用CSV（1982-2024）を読む。
     """
     if key not in SPECIES:
         raise KeyError(f"未知の魚種 key: {key}（{list(SPECIES)}）")
+    if key == "maaji":
+        return _get_maaji_catch_series()
     col = SPECIES[key]
     _, rows = load_catch_table(csv_name)
     years, catch = [], []
