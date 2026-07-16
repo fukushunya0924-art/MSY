@@ -42,7 +42,7 @@ CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "estimates_capacity_ry.pkl")
 
 # -----------------------------------------------------------------------
-# 制約推定（8自由変数, Catch-MSY確定値を固定）の探索設定
+# 制約推定（10自由変数, Catch-MSY確定値 r_x1/r_x2 のみ固定）の探索設定
 # -----------------------------------------------------------------------
 # run_msy.py --constrained が使う。model_constrained.estimate_constrained_robust に渡す。
 # 制約推定は自由推定の約30倍重い（Phase 8: least_squares 1回 3秒→89秒）ため、まずは
@@ -54,26 +54,41 @@ N_SEEDS_C = {"NLM": 8, "LM": 8}
 # 自由版と同じ考え方: NLM は 11点・8自由で識別性が保てるため 0、LM は 8点で弱いため安定化。
 REG_LAMBDA_C = {"NLM": 0.0, "LM": 0.005}
 
-# 制約推定の結果キャッシュ（自由版 CACHE_FILE とは別ファイル。相互に上書きしない）
-CACHE_FILE_CONSTRAINED = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "estimates_capacity_ry_constrained.pkl")
-
-
 def _config_signature():
     """キャッシュ整合性判定に使う探索設定の署名。"""
     return {"n_starts": N_STARTS, "n_seeds": N_SEEDS, "reg_lambda": REG_LAMBDA}
 
 
+# 制約モデルの版数タグ。自由変数の設計を変えたら必ず上げる（旧キャッシュを自動無効化）。
+#   v1: 8自由変数（r_x1,r_x2,S1,S2 固定 + theta 配分）… 廃止
+#   v2: 10自由変数（r_x1,r_x2 のみ固定, C1,D1,C2,D2 を自由推定）… 現行（2026-07-14）
+_CONSTRAINED_MODEL_VERSION = "v2_rx_only_10free"
+
+# 制約推定の結果キャッシュ（自由版 CACHE_FILE とは別ファイル。相互に上書きしない）。
+# ファイル名に _CONSTRAINED_MODEL_VERSION を含めることで、モデル版数を上げた際に
+# 旧版のキャッシュファイルが新版で上書きされて物理パラメータが消失する事故を防ぐ
+# （2026-07-14の v1→v2 移行で旧8変数版の推定結果が失われた反省, docs/research_log.md Phase 13）。
+CACHE_FILE_CONSTRAINED = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    f"estimates_capacity_ry_constrained_{_CONSTRAINED_MODEL_VERSION}.pkl")
+
+
 def _config_signature_constrained():
-    """制約版キャッシュの署名。探索設定に加え、固定値4つ（Catch-MSY確定値）も含める。
+    """制約版キャッシュの署名。探索設定に加え、固定値（r_x1,r_x2）とモデル版数を含める。
 
     自由版 _config_signature は探索設定のみで入力データ変更を検知できないが、
-    制約版は fixed_params.py を変えたら結果が変わるので、その点推定4値を署名に入れる。
-    → fixed_params.py を書き換えると load_estimates_constrained が自動で None を返し、
-      run_msy.py --constrained が再推定する。
+    制約版は fixed_params.py の r_x1,r_x2 を変えたら結果が変わるので署名に入れる。
+    S1,S2 は現行の10変数モデルでは使わないため署名に含めない。
+    さらにモデル版数タグを含めることで、旧 v1（8変数）キャッシュとは必ず
+    署名不一致となり自動的に再推定される。
+    → fixed_params.py（r_x1/r_x2）を書き換えると load_estimates_constrained が
+      自動で None を返し、run_msy.py --constrained が再推定する。
     """
+    fx = fixed_params.get_point()
     return {"n_starts_c": N_STARTS_C, "n_seeds_c": N_SEEDS_C,
-            "reg_lambda_c": REG_LAMBDA_C, "fixed": fixed_params.get_point()}
+            "reg_lambda_c": REG_LAMBDA_C,
+            "fixed_rx": {"r_x1": fx["r_x1"], "r_x2": fx["r_x2"]},
+            "model_version": _CONSTRAINED_MODEL_VERSION}
 
 
 def estimate_regime(sl, regime_name):
