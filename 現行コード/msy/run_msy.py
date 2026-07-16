@@ -19,8 +19,8 @@ NLM(2006-2016) と LM(2017-2024) それぞれについて:
 モデル: capacity_ry（12 変数, 唯一の現行モデル。capacity/full は廃止済み）
 使い方:
   python3 run_msy.py               # 自由推定（12変数）→ MSY（従来どおり）
-  python3 run_msy.py --constrained # 制約推定（8変数, Catch-MSY確定値 r_x1/r_x2/
-                                   #   c1+d1/c2+d2 を固定）→ MSY
+  python3 run_msy.py --constrained # 制約推定（10変数, Catch-MSY確定値 r_x1/r_x2
+                                   #   のみ固定, C1,D1,C2,D2 は自由推定）→ MSY
     → Step 1 の推定器だけ estimate_regime_constrained に差し替わり、Step 2〜5
       （MSY計算・作図）は無改修で共用。出力は *_capacity_ry_constrained.png に分離。
       固定値は fixed_params.py（Catch-MSY 太平洋12県の確定値）が単一の真実の源。
@@ -629,7 +629,7 @@ def main():
         model_str = "capacity_ry_constrained"
 
     print(_sep())
-    _mode = "制約推定(8変数, Catch-MSY確定値固定)" if constrained else "自由推定(12変数)"
+    _mode = "制約推定(10変数, r_xのみ固定)" if constrained else "自由推定(12変数)"
     print(f"MSY 計算  モデル: {model_str}  推定: {_mode}  "
           f"戦略グリッド: {N_GRID_STRATEGIC}^4={N_GRID_STRATEGIC**4} 評価  "
           f"戦術グリッド: {N_GRID}^4={N_GRID**4} 評価")
@@ -658,22 +658,23 @@ def main():
     # ------------------------------------------------------------------
     if constrained:
         fx = fixed_params.get_point()
-        print(f"\n[Step 1] 制約付き ODE 推定（8自由変数, Catch-MSY確定値を固定）")
+        print(f"\n[Step 1] 制約付き ODE 推定（10自由変数, Catch-MSY確定値 r_x のみ固定）")
         print(f"    固定値: r_x1={fx['r_x1']:.3f}  r_x2={fx['r_x2']:.3f}  "
-              f"S1(c1+d1)={fx['S1']:.3f}  S2(c2+d2)={fx['S2']:.3f}")
+              f"（S1,S2 は固定せず C1,D1,C2,D2 を自由推定）")
         print(f"    予算  : NLM {N_STARTS_C['NLM']}×{N_SEEDS_C['NLM']}  "
               f"LM {N_STARTS_C['LM']}×{N_SEEDS_C['LM']}  "
               f"reg_lambda NLM={REG_LAMBDA_C['NLM']} LM={REG_LAMBDA_C['LM']}")
         est_results = load_estimates_constrained()
         if est_results is not None:
-            print("  → 有効なキャッシュを再利用（固定値・予算が一致）")
+            print("  → 有効なキャッシュを再利用（固定値・予算・モデル版数が一致）")
             for rname, _, _ in regimes:
                 res = est_results[rname]
                 m = res["metrics"]["overall"]
-                th = res["params_free"]
+                ap = res["params_abs"]
                 bnd = f"  ⚠境界: {', '.join(res['at_bounds'])}" if res["at_bounds"] else ""
                 print(f"    {rname}: 平均NRMSE={m['mean_NRMSE']:.3f}  "
-                      f"θ1={th[6]:.3f} θ2={th[7]:.3f}{bnd}")
+                      f"c1={ap['c1']:.3f} d1={ap['d1']:.3f} "
+                      f"c2={ap['c2']:.3f} d2={ap['d2']:.3f}{bnd}")
         else:
             est_results = {}
             for rname, sl, _ in regimes:
@@ -683,9 +684,10 @@ def main():
                 res = estimate_regime_constrained(sl, rname)
                 est_results[rname] = res
                 m = res["metrics"]["overall"]
-                th = res["params_free"]
+                ap = res["params_abs"]
                 print(f"    平均R²={m['mean_R2']:+.3f}  平均NRMSE={m['mean_NRMSE']:.3f}  "
-                      f"θ1={th[6]:.3f} θ2={th[7]:.3f}（S の c/d 配分比）")
+                      f"c1={ap['c1']:.3f} d1={ap['d1']:.3f} "
+                      f"c2={ap['c2']:.3f} d2={ap['d2']:.3f}（自由推定した変換効率）")
                 if res["at_bounds"]:
                     print(f"    ⚠ 境界張り付き: {', '.join(res['at_bounds'])}")
             print(f"  → 推定結果を保存: {save_estimates_constrained(est_results)}")

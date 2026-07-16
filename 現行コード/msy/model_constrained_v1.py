@@ -1,26 +1,25 @@
 """
-capacity_ry（12変数）のうち r_x1, r_x2 のみを Catch-MSY 外挿値に固定し、
-残り10自由変数を推定する制約付きモデル。
+capacity_ry（12変数）のうち r_x1, r_x2, c1+d1, c2+d2 を Catch-MSY 外挿値に固定し、
+残り8自由変数だけを推定する制約付きモデル。
 
 ODE右辺・積分・適合度計算は model.py のものをそのまま再利用し、ここでは
-再パラメータ化（10自由変数 -> 12変数への復元）と、それに伴う推定エンジンの
+再パラメータ化（8自由変数 -> 12変数への復元）と、それに伴う推定エンジンの
 組み替えのみを行う。ODE右辺や積分ロジックの再実装はしない。
 
-固定する2値（fixed_params.py が単一の真実の源。r_x1, r_x2 のみ参照する）:
+固定する4値（fixed_params.py が単一の真実の源）:
   r_x1, r_x2 : 被食者の自然増殖率（無次元の率なので正規化/絶対スケールで同値）
+  S1 = c1+d1 : ブリの捕食→変換効率の和（絶対スケール）
+  S2 = c2+d2 : サワラの捕食→変換効率の和（絶対スケール）
 
-自由変数（10次元, 正規化空間。model.py の capacity_ry と同じ意味・スケール）:
-  q = [r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2]
+自由変数（8次元）:
+  q = [r_y1, r_y2, L11, L12, L21, L22, theta1, theta2]
 
-  捕食→捕食者への変換効率 C1, D1, C2, D2 は S1,S2 の固定・theta 配分を廃止し、
-  自由推定する（= 「捕食関連パラメータは ODE データ自身に決めさせる」方針）。
-  推定後の絶対スケール物理パラメータ c1, d1, c2, d2 は
-  model._to_absolute(params_norm, means) が返す（params_abs に格納）。
-
-> 設計変更（2026-07-14）: 旧版は r_x1,r_x2,S1(=c1+d1),S2(=c2+d2) の4値を固定し、
-> S を theta で c/d に配分する8自由変数だった。実験で「S 固定が適合度悪化の主因」
-> と判明したため、固定を r_x1,r_x2 のみに縮小し、C1,D1,C2,D2 を自由推定する
-> 10変数へ変更した。これにより自由12変数版との差は r_x1,r_x2 固定のみとなる。
+  r_y1, r_y2, L11, L12, L21, L22 は model.py の capacity_ry と同じ意味・スケール
+  （正規化空間）。theta1, theta2 in [0,1] は S1, S2 を c/d へ配分する比で、
+    c1 = theta1*S1,       d1 = (1-theta1)*S1
+    c2 = theta2*S2,       d2 = (1-theta2)*S2
+  として絶対スケールの c1,d1,c2,d2 を決め、それを正規化空間の C1,D1,C2,D2 へ
+  逆算する（reconstruct_params 参照）。
 """
 import os
 import functools
@@ -36,39 +35,66 @@ import fixed_params
 
 
 # ----------------------------------------------------------------------
-# 自由変数（10次元）の定義。並び・bounds は model.py capacity_ry の
-# names[2:12]（r_x1,r_x2 を除いた残り10）と完全一致させる。
+# 自由変数（8次元）の定義
 # ----------------------------------------------------------------------
-FREE_NAMES = ["r_y1", "r_y2", "L11", "L12", "L21", "L22", "C1", "D1", "C2", "D2"]
-FREE_GUESS = [0.3, 0.4, 0.1, 0.1, 0.1, 0.1, 0.15, 0.15, 0.15, 0.15]
-FREE_LOWER = [0.01, 0.01, 1e-4, 1e-4, 1e-4, 1e-4, 1e-3, 1e-3, 1e-3, 1e-3]
-FREE_UPPER = [2.0, 2.0, 5.0, 5.0, 5.0, 5.0, 10.0, 10.0, 10.0, 10.0]
+FREE_NAMES = ["r_y1", "r_y2", "L11", "L12", "L21", "L22", "theta1", "theta2"]
+FREE_GUESS = [0.3, 0.4, 0.1, 0.1, 0.1, 0.1, 0.5, 0.5]
+FREE_LOWER = [0.01, 0.01, 1e-4, 1e-4, 1e-4, 1e-4, 1e-6, 1e-6]
+FREE_UPPER = [2.0, 2.0, 5.0, 5.0, 5.0, 5.0, 1.0 - 1e-6, 1.0 - 1e-6]
 
-# 正則化の対象: L11..L22, C1..D2（index 2..9）。r_y1, r_y2 には掛けない。
-# model.py capacity_ry の reg_idx=[4..11]（12変数の L と C/D）と対応する。
-_REG_SLICE = slice(2, 10)
+# 正則化の対象（q の先頭6要素: r_y1, r_y2, L11, L12, L21, L22）。
+# theta1, theta2 (index 6, 7) には罰則をかけない
+# （かけると配分比が 0.5 に引っ張られ「固定値 S を分配する」という意味が崩れるため）。
+_REG_SLICE = slice(0, 6)
 
-# マルチスタートのサンプリング方式。bounds の比が広い（>50）ものは対数一様、
-# そうでなければ線形一様。model.py の _LOG_UNIFORM_RATIO_THRESHOLD ルールと同一。
-# 10変数とも比が 50 を超える（r_y: 200, L: 5e4, C/D: 1e4）ため実質すべて "log"。
-_FREE_SAMPLE_MODES = ["log"] * 10
+# マルチスタートのサンプリング方式をパラメータごとに明示指定する。
+# r_y1, r_y2（比 2.0/0.01=200）と L11..L22（比 5.0/1e-4=50000）は
+# model.py と同じ閾値ルールでも対数一様が選ばれるため "log" のままでよい。
+# theta1, theta2 は bounds の比が 1e6 近くにあり、閾値ルールに素直に従うと
+# 対数一様になって 0 近傍に極端に偏ってしまう（配分比としては不自然）ため、
+# 必ず線形一様 "linear" を強制する。
+_FREE_SAMPLE_MODES = ["log", "log", "log", "log", "log", "log", "linear", "linear"]
 
 
-def reconstruct_params(q: np.ndarray, fixed: dict) -> np.ndarray:
-    """10自由変数 q と固定値 fixed から、capacity_ry の12次元 params_norm を復元する。
+def reconstruct_params(q: np.ndarray, means: np.ndarray, fixed: dict) -> np.ndarray:
+    """8自由変数 q と固定値 fixed から、capacity_ry の12次元 params_norm を復元する。
 
-    q      : [r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2]（正規化空間）
-    fixed  : dict（少なくとも r_x1, r_x2 を含む。S1,S2 は参照しない）
+    q      : [r_y1, r_y2, L11, L12, L21, L22, theta1, theta2]
+    means  : [mx1, mx2, my1, my2]（そのレジームの各種全期間平均、正規化に使った値）
+    fixed  : dict(r_x1, r_x2, S1, S2)（fixed_params.get_point() 形式）
 
     返り値は model.MODELS["capacity_ry"]["names"] と完全に同じ並び
     [r_x1, r_x2, r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2] の ndarray。
 
-    r_x1, r_x2 を先頭に差し込み、残り10要素はそのまま連結するだけ
-    （C1,D1,C2,D2 は正規化空間の値として自由推定するため換算不要）。
+    換算式（model._to_absolute の逆演算）:
+      絶対スケールで c1+d1=S1, c2+d2=S2 を厳密に満たすように
+        c1 = theta1*S1,  d1 = (1-theta1)*S1
+        c2 = theta2*S2,  d2 = (1-theta2)*S2
+      を作り、それを正規化空間へ戻す:
+        C1 = c1 * mx1 / my1
+        D1 = d1 * mx2 / my1
+        C2 = c2 * mx1 / my2
+        D2 = d2 * mx2 / my2
+      （model._to_absolute の c1 = C1*my1/mx1 等の逆関数になっている）
     """
+    mx1, mx2, my1, my2 = means
+    r_y1, r_y2, L11, L12, L21, L22, theta1, theta2 = q
+
     r_x1 = fixed["r_x1"]
     r_x2 = fixed["r_x2"]
-    r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2 = q
+    S1 = fixed["S1"]
+    S2 = fixed["S2"]
+
+    c1 = theta1 * S1
+    d1 = (1.0 - theta1) * S1
+    c2 = theta2 * S2
+    d2 = (1.0 - theta2) * S2
+
+    C1 = c1 * mx1 / my1
+    D1 = d1 * mx2 / my1
+    C2 = c2 * mx1 / my2
+    D2 = d2 * mx2 / my2
+
     return np.array([r_x1, r_x2, r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2])
 
 
@@ -96,17 +122,17 @@ def _sample_starts(rng: np.random.Generator, n_starts: int,
 def estimate_constrained(series_slice, n_starts=32, reg_lambda=0.0, seed=0,
                           fixed=None, verbose=False):
     """
-    1レジーム分を、r_x1/r_x2 のみ固定した10自由変数で推定する。
+    1レジーム分を、r_x1/r_x2/c1+d1/c2+d2 を固定した8自由変数で推定する。
 
     model.estimate() と同じ骨格（データ整形→残差関数→マルチスタート
-    least_squares→絶対スケール換算）だが、最適化変数が10次元 q である点、
+    least_squares→絶対スケール換算）だが、最適化変数が8次元 q である点、
     残差関数の中で reconstruct_params により12次元 params_norm を
     組み立ててから simulate に渡す点が異なる。
 
     n_starts   : マルチスタート回数（1なら単一スタート）
-    reg_lambda : q の index 2..9（L11..L22, C1..D2）への L2 正則化強度
-                 （0で無効。r_y1, r_y2 には掛けない）
-    fixed      : dict（r_x1, r_x2 を含む）。None なら fixed_params.get_point()
+    reg_lambda : q の先頭6要素（r_y1,r_y2,L11,L12,L21,L22）への L2 正則化強度
+                 （0で無効。theta1, theta2 には掛けない）
+    fixed      : dict(r_x1, r_x2, S1, S2)。None なら fixed_params.get_point()
 
     返り値 dict は model.estimate() と同一形状
     （params_norm, params_abs, trajectory_abs, metrics, cost, means, names,
@@ -141,7 +167,7 @@ def estimate_constrained(series_slice, n_starts=32, reg_lambda=0.0, seed=0,
 
     def residuals(q):
         """4種×n_pts点の対数誤差残差（+ 正則化項）。simulate失敗時は一律ペナルティ。"""
-        params_norm = reconstruct_params(q, fixed)
+        params_norm = reconstruct_params(q, means, fixed)
         y = model.simulate(params_norm, ode, t_rel, init)
         if y is None:
             base = np.full(n_pts * 4, model._INTEGRATION_FAILURE_PENALTY)
@@ -168,7 +194,7 @@ def estimate_constrained(series_slice, n_starts=32, reg_lambda=0.0, seed=0,
             best = res
 
     q_best = best.x
-    params_norm = reconstruct_params(q_best, fixed)
+    params_norm = reconstruct_params(q_best, means, fixed)
     traj_norm = model.simulate(params_norm, ode, t_rel, init)
     traj_abs = np.vstack([traj_norm[i] * means[i] for i in range(4)])
     metrics = model.compute_metrics(traj_abs, obs_abs)
