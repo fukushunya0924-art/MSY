@@ -732,3 +732,63 @@ NRMSE: NLM=0.4084（R²=−3.539, cost=3.712）／ LM=0.1217（R²=−0.671, cos
 境界張り付きなし）。魚種別: NLM マイワシ0.305/+0.88, ウルメ0.512/−10.64, ブリ0.417/−3.94,
 サワラ0.399/−0.46／ LM マイワシ0.171/+0.58, ウルメ0.099/+0.62, ブリ0.130/−4.36,
 サワラ0.087/+0.49。過去記録の到達値（NLM0.408/LM0.122）とほぼ完全一致。
+
+---
+
+## Phase 13: ODE側MSYの持続性制約・漁獲率上限張り付き改修（2026-07-16）
+
+### 動機
+現行 `msy/run_msy.py` のMSYには (1) 持続性基準が初期値B0（LV軌道の位相依存）依存、
+(2) 最適漁獲率がグリッド上限 `F_MAX=0.95` に張り付き＝モデル由来でなく探索上限で止まった値、
+(3) 密度依存なしLVでは収量が漁獲率に単調増加し内部最大が無い恐れ、という疑いがあった。
+
+### 調査で確定した現行実装（コード実測）
+- `check_sustainability`（`msy_core.py:203`）の関数既定は `mode="path"`（全時点最小）だが、
+  **実際に走る `run_msy.py:91` の `SUSTAIN_CFG` は `mode="endpoint"` で上書き**。
+  現行の戦略的MSYの制約は「全4種で **B_i(T) ≥ 0.9·B0_i**（終端値 vs 初期値）」。B0=観測初年資源量＝位相依存。
+- 収量は時間平均 `Y=(1/T)∫Σf_iX_i dt`（台形則, `msy_core.py:170`）。終端値ではない（良好）。
+- `F_MAX=0.95`（`msy_core.py:35`）は `f=clip(catch/bio,0,0.95)`（`data_loader.py:141`）由来の年当たり無次元収穫率、
+  全種共通。グリッド `linspace(0,0.95,n)` の上端としてのみ使用（連続最適化boundsではなく列挙）。ODE内部でfはクリップされない。
+- モデルは一般化LV。**種内競争項なし**（`model.make_ode`、一般化LV行列Aの対角=0）。漁獲項は実質 `−f_i·B_i`。
+- **既存バグ発見**: `np.trapz` はnumpy 2.0で削除。インストール済みnumpy 2.5.1では現行 `run_msy.py` が
+  `average_yield` で即クラッシュ（＝そのままでは動かない状態だった）。
+
+### 平衡点の構造（解析）
+内部平衡は2つの2×2線形系に分解できる（`np.linalg.solve`, inv不使用）:
+```
+[[L11,L12],[L21,L22]]·[y1,y2] = [r_x1−fx1, r_x2−fx2]        （被食式→捕食者y）
+[[C1L11,D1L21],[C2L12,D2L22]]·[x1,x2] = [r_y1+fy1, r_y2+fy2]  （捕食式→被食者x）
+```
+平衡でのヤコビアン `J=diag(B_eq)·A`。自己制限なし→古典LVの中立中心（固有値実部≈0）。
+
+### 実装（種構成・実名に整合）
+- 新規 `msy/sustainability.py`: `DEFAULT_SUSTAINABILITY/OPTIMIZATION/SENSITIVITY`（Python定数, YAML不使用）、
+  `compute_equilibrium` / `equilibrium_jacobian` / `simulate_constant_f` /
+  4モード判定 `evaluate_{legacy,equilibrium_lrp,trajectory_floor,time_average_lrp}` /
+  `boundary_diagnostics` / `classify_solution` / `grid_search_general`（モード別feasibility・yield）/
+  `near_optimal_safe`（既定 max_min_biomass_margin）/ `lrp_sensitivity` / `upper_bound_sensitivity` /
+  `sensitivity_to_csv`。
+- `msy/msy_core.py`: `np.trapz→np.trapezoid` 互換シム追加（6行）＋docstring1行。`check_sustainability`・`F_MAX`・
+  既定は無改変（legacy保持, 既存 `run_msy.py` 結果は不変）。
+- 新規 `msy/run_sustainability_diagnostics.py`: 自由推定キャッシュで4種実走→コンソール要約＋CSV。
+- 新規 `tests/test_sustainability.py`: 11群（legacy互換・位相依存・平衡解析解・非正平衡infeasible・
+  上限張り付き・LRP境界・95%安全側・時間平均収量恒等式・solver失敗除外・感度ラッパーT配線・
+  非正平衡はinfeasible≠solver_failure）。pytest不使用、`python3 tests/test_sustainability.py` で実行。全パス。
+- 実装はSonnet5サブエージェント2体（コア＋テスト／ドライバ＋実走）に分業、Opusが仕様策定・検証・統合。
+
+### フィット4種での診断結果（自由推定, NLM NRMSE0.099 / LM 0.065, n_grid=5, 約25秒）
+- **正の共存平衡が両レジームで存在しない**: 無漁獲平衡（絶対, 千トン）
+  NLM=[**−50.0**(マアジ), 371.1, 857.9, 6.3] / LM=[46.x, **−130.2**(ウルメ), ..., ...]。
+  無漁獲f=0の200年シミュでも any_negative=True。→ `equilibrium_lrp` は全lrp比[0.1–0.5]で n_feasible=0（適用不可）。
+- **上限駆動**: 無制約f*はサワラy2等が常時 f=0.95 に張り付き、上限を上げると収量が単調増加
+  （NLM: f_upper 0.25→1.25 で 206.7→380.6→607.2→801.4→1094.0）。診断=upper-bound-driven。
+- legacy制約下の最適は境界解（NLM=multiple_boundaries, LM=trajectory_floor_boundary）＝**内部最大なし**。
+  legacy-feasible点は極めて僅少（NLM 1/625, LM 2–6/625, n_grid=5では薄い殻）。
+- **95%安全側解は見つからず**（feasible集合が僅少で0.95·Y_maxに届く別解なし）。
+- 結論: 本モデルの結果は **MSYではなく「資源下限制約下の最大収量（LRP-constrained maximum yield）」**。
+
+### 残懸念
+- 密度依存なしLV＝内部MSY非存在。内部最大が要るなら種内競争項αの再導入か、漁獲率上限の生物学的設定が必要。
+- `equilibrium_lrp`（主解析想定）は本フィットでは適用不可。実運用は `trajectory_floor`/`legacy` に依存。
+- n_grid=5では持続可能領域が薄く、f*の細部は解像度依存（本番は要n_grid増）。
+- 長期(100+100yr)軌道は数値的には発散しないがfeasibilityは種の0への漸近で決まる（NLM infeasible / LM feasible）。

@@ -137,7 +137,14 @@ dy2 = (−r_y2 − f_y2)·y2 + C2·L12·x1·y2 + D2·L22·x2·y2
 
 **マアジ不適合の構造診断（Phase 12b）**: 4種の中で**マアジだけ「固定 r_x1(0.228) < 漁獲圧 f_x1(≈0.41)」**。f=漁獲量/資源量（data_loader.py:141、推定パラメータではなくデータ由来の既知強制項）。マアジは毎年資源量の約4割を漁獲される高漁獲圧種で、被食者式の実効内因成長 (r_x1−f_x1)=−0.18/年 が捕食項の前から負→モデルが構造的にマアジを暴落させ横ばい実データに合わない。対照的にウルメは f≈0.11 と低漁獲圧で r_x2=0.739>>f と健全（LM NRMSE 0.089）。捕食者ブリ・サワラは r_y(自然死亡率)を自由推定するため固定 vs f の衝突なし。**根本原因**: Catch-MSYのr（漁獲を暗黙に含む余剰生産の内因成長）を、f を明示減算する捕食被食ODEの純内因成長 r_x にそのまま代入した不整合（f>r となるマアジで破綻）。
 
+**持続性制約・上限張り付き改修（Phase 13, 2026-07-16）**: ODE側MSYの持続性判定を設定切替式に再設計し、漁獲率上限への張り付きを自動診断できるようにした。新規 `msy/sustainability.py`（平衡点計算・4モード持続判定・境界診断・感度分析・95%安全側解）＋診断ドライバ `msy/run_sustainability_diagnostics.py`＋テスト `tests/test_sustainability.py`（11群, pytest不使用）。`msy_core.py` は `np.trapz`→`np.trapezoid` 互換シムのみ追加（**numpy 2.x で現行 `run_msy.py` が `average_yield` で落ちていた既存バグを解消**）、現行 `check_sustainability`（legacy）は無改変で保持。
+> - **現行90%制約の正体**: `run_msy.py` の `SUSTAIN_CFG` は関数既定の `mode="path"` ではなく **`mode="endpoint"`** で上書きされており、判定は「全4種で **B_i(T) ≥ 0.9·B0_i**（終端値 vs 初期値）」。B0は観測初年資源量＝**位相依存**。
+> - **4モード**: `legacy_path`（現行互換・警告付き）/ `equilibrium_lrp`（無漁獲平衡比 `B_eq_fished ≥ lrp·B_eq_unfished`, 主解析想定）/ `trajectory_floor`（長期軌道の資源下限）/ `time_average_lrp`。設定はPython定数（`DEFAULT_SUSTAINABILITY` 等, YAML不使用）。
+> - **決定的知見（フィット4種で実走・独立検証済）**: モデルは一般化LV（自己制限項なし＝Aの対角0）で、**両レジームとも正の共存平衡が存在しない**（NLM: マアジx1=−50千トン, LM: ウルメx2=−130千トン）。→ `equilibrium_lrp` は全lrp比で n_feasible=0（適用不可）。**収量は漁獲率上限f=0.95に張り付く上限駆動**（無制約: サワラy2等が常時上限、収量は範囲内で単調増加）で**内部最大なし**。∴ 結果は **MSYではなく「資源下限制約下の最大収量（LRP-constrained maximum yield）」** と呼ぶべき。詳細 `docs/research_log.md` Phase 13。
+> - 実行: `cd msy && python3 run_sustainability_diagnostics.py`（自由推定キャッシュを使用, 約25秒, CSVを `outputs/sustainability_sensitivity_{NLM,LM}.csv` に出力）。
+
 **次のステップ**:
+0. **上限駆動・平衡非存在への対応（Phase 13の含意）**: 現行の密度依存なしLVでは内部MSYが定義できない。持続的な内部最大が要るなら種内競争項（α, 環境収容力）の再導入か、漁獲率上限を生物学的根拠で設定する必要。教授相談事項に追加。
 1. **マアジ r_x1 の固定を外す**（r_x2 のみ固定＝11自由変数）で再実行し、マアジのフィット回復と「マアジのCatch-MSY r が主因」を直接検証。あるいはマアジ Catch-MSY r のプライアレンジ再検討。
 2. 戦略的MSY（持続性制約つき）は Phase 11 の8変数版で NLM 374.7 / LM 188.6千トン/年。10変数版でのMSY再計算は `run_msy.py --constrained`（本番予算）で通せば新キャッシュから算出可能。
 3. ウルメx2 NLMの当てはまりの悪さの原因切り分け(モデル vs 指標値ノイズ)。→ 未着手。
