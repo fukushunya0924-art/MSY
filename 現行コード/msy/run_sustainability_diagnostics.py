@@ -57,6 +57,66 @@ _out_dir = os.path.join(_here, "outputs")
 os.makedirs(_out_dir, exist_ok=True)
 
 # =============================================================================
+# CSV出力用: sustainability_mode の英語コード -> mode1~4 表記
+# （sustainability.py 内部の cfg["mode"] 分岐キー自体は変更しない。CSVの見た目だけ
+#   分かりやすくするため、行を書き出す直前（row_for_species）でのみ変換する）
+# 対応は sustainability.py の DEFAULT_SUSTAINABILITY["mode"] コメントに書かれた
+# 順序（legacy_path|equilibrium_lrp|trajectory_floor|time_average_lrp）と一致させる。
+# =============================================================================
+MODE_LABELS = {
+    "legacy_path": "mode1",       # 現行互換・初期資源量比（位相依存, endpoint tol=0.1）
+    "equilibrium_lrp": "mode2",   # 無漁獲/漁獲下の内部平衡比によるLRP判定（X0非依存）
+    "trajectory_floor": "mode3",  # 長期軌道の最小値がfloorを下回らないか判定
+    "time_average_lrp": "mode4",  # 評価窓の平均資源量がLRPを満たすか判定
+}
+MODE_LEGEND = {
+    "mode1": "legacy_path（現行互換・位相依存、msy_core.check_sustainability委譲）",
+    "mode2": "equilibrium_lrp（無漁獲/漁獲下の内部平衡比によるLRP判定、X0非依存）",
+    "mode3": "trajectory_floor（長期軌道の最小値がfloor=floor_ratio*基準値を下回らないか）",
+    "mode4": "time_average_lrp（評価窓の平均資源量がaverage_lrp_ratio*基準値以上か）",
+}
+
+# =============================================================================
+# CSV出力用: 列見出し（ヘッダー行）の日本語化
+# sus.sensitivity_to_csv() は sus.CSV_COLUMNS（英語キー）で辞書を書き出すため、
+# 内部のキー名（row_for_species が組み立てる dict のキー）は変更せず、
+# 書き出し後のCSVファイルの1行目（ヘッダー）だけをこのマップで日本語に置換する。
+# =============================================================================
+JP_HEADERS = {
+    "regime": "レジーム",
+    "sustainability_mode": "持続性モード",
+    "lrp_ratio": "LRP比率",
+    "fishing_upper_bound": "漁獲率上限",
+    "solution_type": "解の種類",
+    "species": "種",
+    "fishing_rate": "漁獲率",
+    "yield": "収量",
+    "biomass": "資源量",
+    "biomass_reference": "基準資源量",
+    "biomass_ratio": "資源量比",
+    "minimum_biomass": "最小資源量",
+    "at_upper_bound": "上限到達",
+    "active_constraint": "有効制約",
+    "feasible": "実行可能",
+    "warning": "警告",
+}
+
+
+def japanize_csv_header(path):
+    """sus.sensitivity_to_csv() が書いたCSVの1行目（英語ヘッダー）だけを
+    JP_HEADERS で日本語に置換する（データ行・列の並び順は一切変更しない）。
+    """
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        lines = f.readlines()
+    if not lines:
+        return
+    header_cols = lines[0].rstrip("\r\n").split(",")
+    jp_header = ",".join(JP_HEADERS.get(c, c) for c in header_cols)
+    lines[0] = jp_header + "\n"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        f.writelines(lines)
+
+# =============================================================================
 # 診断設定（トラクタビリティ: n_grid=5 -> 5^4=625評価/条件）
 # =============================================================================
 N_GRID = 5
@@ -158,6 +218,7 @@ def row_for_species(regime, mode, lrp_ratio, f_upper, solution_type,
     yield_override は不要（f_i*biomass_iで正確）。
     """
     warning_str = "; ".join(warning_list) if warning_list else ""
+    mode_label = MODE_LABELS.get(mode, mode)
     rows = []
     for i, key in enumerate(KEYS):
         def _v(arr):
@@ -172,7 +233,7 @@ def row_for_species(regime, mode, lrp_ratio, f_upper, solution_type,
         else:
             yield_i = (f_i * _v(biomass)) if (f_i != "" and _v(biomass) != "") else ""
         rows.append({
-            "regime": regime, "sustainability_mode": mode,
+            "regime": regime, "sustainability_mode": mode_label,
             "lrp_ratio": lrp_ratio if lrp_ratio is not None else "",
             "fishing_upper_bound": f_upper if f_upper is not None else "",
             "solution_type": solution_type, "species": key,
@@ -580,15 +641,29 @@ def main():
     # -----------------------------------------------------------------------
     print("\n" + _sep())
     print("[6] CSV出力")
+    print("  sustainability_mode 列の凡例（mode1~4, sustainability.MODE_LABELS参照）:")
+    for k in ("mode1", "mode2", "mode3", "mode4"):
+        print(f"    {k}: {MODE_LEGEND[k]}")
+    legend_path = os.path.join(_out_dir, "sustainability_mode_legend.csv")
+    with open(legend_path, "w", newline="", encoding="utf-8") as f:
+        import csv as _csv
+        writer = _csv.writer(f)
+        writer.writerow(["持続性モード", "元コード名", "説明"])
+        for k, code in [("mode1", "legacy_path"), ("mode2", "equilibrium_lrp"),
+                        ("mode3", "trajectory_floor"), ("mode4", "time_average_lrp")]:
+            writer.writerow([k, code, MODE_LEGEND[k]])
+
     csv_paths = {}
     for rname in ["NLM", "LM"]:
         path = os.path.join(_out_dir, f"sustainability_sensitivity_{rname}.csv")
         sus.sensitivity_to_csv(all_csv_rows[rname], path)
+        japanize_csv_header(path)
         csv_paths[rname] = path
         n_rows = len(all_csv_rows[rname])
         exists = os.path.exists(path)
         size = os.path.getsize(path) if exists else -1
         print(f"  {rname}: {path}  ({n_rows}行, exists={exists}, size={size}バイト)")
+    print(f"  凡例: {legend_path}")
 
     # -----------------------------------------------------------------------
     # 全体サマリ表
