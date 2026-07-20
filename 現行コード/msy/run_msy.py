@@ -97,6 +97,12 @@ N_GRID_STRATEGIC = 8
 REGIME_COLORS = {"NLM": "#2166ac", "LM": "#d6604d"}
 SPECIES_COLORS = ["#1b7837", "#762a83", "#e66101", "#4393c3"]
 
+# ファイル名・タイトル用の種名タグ（data_loader.SPECIES_LABELS から動的生成。
+# 種構成を差し替えても（マアジ版/マイワシ版など）ハードコードせず自動追従させる）。
+_SPECIES_NAMES = [lbl.split(" (")[0] for lbl in SPECIES_LABELS]
+SPECIES_TAG = "_".join(_SPECIES_NAMES)
+SPECIES_TAG_PLUS = f"{_SPECIES_NAMES[0]}+{_SPECIES_NAMES[1]} / {_SPECIES_NAMES[2]}+{_SPECIES_NAMES[3]}"
+
 
 # =============================================================================
 # コンソール出力ユーティリティ
@@ -124,27 +130,16 @@ def print_strategic_result(regime_name, model_str, T, grid_res,
     print(f"[戦略的 MSY]  レジーム: {regime_name}  モデル: {model_str}  T={T:.1f} 年")
     print(_sep("-"))
 
-    # ── 無制約版（比較用・従来どおり） ──
-    f_star = grid_res["f_star"]
-    msy    = grid_res["msy"]
-    per_sp = grid_res["per_species_at_msy"]
     n_eval = grid_res["n_evaluated"]
     n_ok   = grid_res["n_success"]
-    print(f"  [無制約] MSY = {msy:.3f} 千トン/年")
-    print(f"           f*  : f_x1={f_star[0]:.3f}  f_x2={f_star[1]:.3f}  "
-          f"f_y1={f_star[2]:.3f}  f_y2={f_star[3]:.3f}")
-    print("           種別収量内訳（千トン/年）:")
-    for i, lab in enumerate(SPECIES_LABELS):
-        print(f"             {lab:22s}: {per_sp[i]:.3f}")
     print(f"  (評価点数: {n_eval:5d}  ODE成功: {n_ok:5d})")
 
-    # ── 制約版（sustain 指定時） ──
+    # ── 持続性ルールを満たす最大収量（唯一のMSY値として扱う） ──
     if sustain_cfg is not None:
         n_feas = grid_res["n_feasible"]
         f_con  = grid_res["f_star_constrained"]
         msy_c  = grid_res["msy_constrained"]
         per_c  = grid_res["per_species_at_msy_constrained"]
-        print(_sep("-"))
         tol_pct = int(sustain_cfg.get("tol", 0.1) * 100)
         print(f"  [制約版]  持続可能点: {n_feas:5d} / {n_eval:5d}")
         print(f"  制約 MSY = {msy_c:.3f} 千トン/年"
@@ -217,7 +212,7 @@ def plot_common_sweep(sweep_results, model_str):
 
     fig.suptitle("共通漁獲率 vs 平均漁獲量（NLM / LM）", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_無制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_無制約_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -253,14 +248,14 @@ def plot_grid_scatter(grid_results_nlm, grid_results_lm, model_str):
             )
 
         ax.set_title(f"{rname}: グリッド探索（{N_GRID}^4={N_GRID**4} 評価）")
-        ax.set_xlabel("漁獲率の合計 Σfᵢ")
+        ax.set_xlabel("漁獲率の合計（4種の和） Σf")
         ax.set_ylabel("平均漁獲量（千トン/年）")
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, ls="--", alpha=0.35)
 
     fig.suptitle(f"グリッド全評価散布図 — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_グリッド散布_無制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_グリッド散布_無制約_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -290,7 +285,7 @@ def plot_sensitivity(sens_results_nlm, sens_results_lm, model_str):
 
     fig.suptitle(f"種別感度スイープ（f* 基準 1 次元変化） — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_種別感度スイープ_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_種別感度スイープ_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -333,7 +328,7 @@ def plot_tactical(tac_nlm, tac_lm, model_str):
     ax1.grid(True, ls="--", alpha=0.4)
 
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_戦術的MSY_年次_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_戦術的MSY_年次_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -383,7 +378,7 @@ def plot_nlm_lm_comparison(grid_nlm, grid_lm, model_str):
     ax2.grid(axis="y", ls="--", alpha=0.5)
 
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_NLM_LM比較_無制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_NLM_LM比較_無制約_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -435,14 +430,14 @@ def plot_grid_scatter_constrained(grid_results_nlm, grid_results_lm, model_str):
         n_feas = grid_res["n_feasible"]
         n_eval = grid_res["n_evaluated"]
         ax.set_title(f"{rname}: 制約グリッド探索（持続可能点: {n_feas}/{n_eval}）")
-        ax.set_xlabel("漁獲率の合計 Σfᵢ")
+        ax.set_xlabel("漁獲率の合計（4種の和） Σf")
         ax.set_ylabel("平均漁獲量（千トン/年）")
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, ls="--", alpha=0.35)
 
     fig.suptitle(f"制約グリッド散布図（feasible/infeasible 色分け） — {model_str}", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_グリッド散布_持続可能制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_グリッド散布_持続可能制約_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -462,7 +457,7 @@ def plot_common_sweep_constrained(sweep_results, model_str):
         my = sweep["mean_yield"]
         feasible_mask = sweep["feasible_mask"]
 
-        ax.plot(fc, my, "k-", lw=2.5, label="合計（無制約）")
+        ax.plot(fc, my, "k-", lw=2.5, label="収量曲線")
 
         # feasible 域を薄い緑で塗りつぶす
         for i in range(len(fc) - 1):
@@ -487,11 +482,6 @@ def plot_common_sweep_constrained(sweep_results, model_str):
                        label=f"制約最大 f={best_f_c:.3f}")
             ax.axhline(best_y_c, color="green", ls=":", lw=1.2)
 
-        # 無制約最大点
-        if np.isfinite(sweep["best_f"]):
-            ax.axvline(sweep["best_f"], color="gray", ls=":", lw=1.2,
-                       label=f"無制約最大 f={sweep['best_f']:.3f}")
-
         ax.set_title(f"{rname}: 共通漁獲率スイープ（制約版・{model_str}）")
         ax.set_xlabel("共通漁獲率 f")
         ax.set_ylabel("平均漁獲量（千トン/年）")
@@ -500,7 +490,7 @@ def plot_common_sweep_constrained(sweep_results, model_str):
 
     fig.suptitle("共通漁獲率スイープ（制約版 feasible 域を緑で表示）", fontsize=13)
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_持続可能制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_共通漁獲率スイープ_持続可能制約_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -509,29 +499,20 @@ def plot_common_sweep_constrained(sweep_results, model_str):
 def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
     """
     図 C3: NLM vs LM の制約 MSY 値と種別収量の棒グラフ比較。
-    無制約 MSY も同一グラフに薄く重ねて比較する。
     """
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
-    # ── 左: MSY 値の比較（無制約 vs 制約） ──
+    # ── 左: 持続性ルールを満たす最大収量の比較 ──
     ax = axes[0]
     rnames    = ["NLM", "LM"]
-    msys_unc  = [grid_nlm["msy"],             grid_lm["msy"]]
     msys_con  = [grid_nlm["msy_constrained"], grid_lm["msy_constrained"]]
     x_pos     = np.arange(len(rnames))
-    width     = 0.35
+    width     = 0.5
     colors    = [REGIME_COLORS["NLM"], REGIME_COLORS["LM"]]
 
-    bars_unc = ax.bar(x_pos - width / 2, msys_unc, width,
-                      color=colors, alpha=0.4, edgecolor="black",
-                      label="無制約 MSY", hatch="//")
-    bars_con = ax.bar(x_pos + width / 2, msys_con, width,
+    bars_con = ax.bar(x_pos, msys_con, width,
                       color=colors, alpha=0.85, edgecolor="black",
                       label="制約 MSY")
-    for bar, val in zip(bars_unc, msys_unc):
-        if np.isfinite(val):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
-                    f"{val:.2f}", ha="center", va="bottom", fontsize=9, color="gray")
     for bar, val in zip(bars_con, msys_con):
         if np.isfinite(val):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
@@ -539,7 +520,7 @@ def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
     ax.set_xticks(x_pos)
     ax.set_xticklabels(rnames)
     ax.set_ylabel("最大平均漁獲量（千トン/年）")
-    ax.set_title(f"戦略的 MSY 比較（無制約 vs 制約） — {model_str}")
+    ax.set_title(f"戦略的 MSY（持続性ルール満たす最大収量） — {model_str}")
     ax.legend(fontsize=9)
     ax.grid(axis="y", ls="--", alpha=0.5)
 
@@ -567,7 +548,7 @@ def plot_nlm_lm_comparison_constrained(grid_nlm, grid_lm, model_str):
     ax2.grid(axis="y", ls="--", alpha=0.5)
 
     plt.tight_layout()
-    out = os.path.join(_out_dir, f"msy_NLM_LM比較_持続可能制約_マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"msy_NLM_LM比較_持続可能制約_{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -596,11 +577,11 @@ def plot_fit(est_results, regimes, model_str, constrained):
             ax.grid(True, ls="--", alpha=0.5)
             ax.legend(fontsize=8)
     tag = "【制約推定】" if constrained else ""
-    fig.suptitle(f"{tag}マアジ+ウルメイワシ / ブリ+サワラ — {model_str}（積分結果の滑らか軌道）",
+    fig.suptitle(f"{tag}{SPECIES_TAG_PLUS} — {model_str}（積分結果の滑らか軌道）",
                  fontsize=14, y=1.003)
     plt.tight_layout()
     suffix = "_制約_" if constrained else "_"
-    out = os.path.join(_out_dir, f"fit{suffix}マアジ_ウルメイワシ_ブリ_サワラ_{model_str}.png")
+    out = os.path.join(_out_dir, f"fit{suffix}{SPECIES_TAG}_{model_str}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  → {out}")
@@ -733,8 +714,6 @@ def main():
         print(f"  1. 共通漁獲率スイープ ({N_COMMON} 点, 制約付き) ...", flush=True)
         sweep = scan_common_rate(pn, mn, T, X0n, sustain=SUSTAIN_CFG)
         sweep_res_list.append(sweep)
-        print(f"     最大収量（無制約）: {sweep['best_yield']:.3f} 千トン/年  "
-              f"at f_common={sweep['best_f']:.3f}")
         print(f"     最大収量（制約）  : {sweep['best_yield_constrained']:.3f} 千トン/年  "
               f"at f_common={sweep['best_f_constrained']:.3f}")
 
@@ -801,19 +780,17 @@ def main():
     print("\n" + _sep())
     print("[全体サマリ]")
     print(_sep("-"))
-    print(f"{'レジーム':>6}  {'無制約MSY':>12}  {'制約MSY':>10}  "
+    print(f"{'レジーム':>6}  {'制約MSY':>10}  "
           f"持続可能点/評価点  制約 f*（x1, x2, y1, y2）")
     for rname, data in strategic.items():
         g       = data["grid"]
-        f_unc   = g["f_star"]
         f_con   = g["f_star_constrained"]
-        msy_unc = g["msy"]
         msy_con = g["msy_constrained"]
         n_feas  = g["n_feasible"]
         n_eval  = g["n_evaluated"]
         f_con_str = (f"{f_con[0]:.3f}  {f_con[1]:.3f}  {f_con[2]:.3f}  {f_con[3]:.3f}"
                      if np.isfinite(msy_con) else "N/A")
-        print(f"  {rname:>4}  {msy_unc:>12.3f}  {msy_con:>10.3f}  "
+        print(f"  {rname:>4}  {msy_con:>10.3f}  "
               f"{n_feas:>7d} / {n_eval:<6d}  {f_con_str}")
     print(_sep())
     print("MSY 計算完了。")

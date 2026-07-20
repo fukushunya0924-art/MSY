@@ -24,6 +24,9 @@ MSY（最大持続生産量）計算のコア関数群。
 import numpy as np
 from scipy.integrate import solve_ivp
 
+if not hasattr(np, "trapz"):
+    np.trapz = np.trapezoid  # numpy>=2.0 で trapz が削除されたため
+
 # =============================================================================
 # 計算規模に関わる定数
 # =============================================================================
@@ -203,6 +206,9 @@ def average_yield(f_vec, params_norm, means, T, X0_norm, n_eval=N_EVAL_TRAJ):
 def check_sustainability(traj_abs, scope="all", mode="path", tol=0.1):
     """
     軌道 traj_abs に対して「非減少資源量制約（持続性制約）」を判定する。
+
+    legacy パス（初期資源量を基準にした位相依存の判定）。新しい判定モード
+    （equilibrium_lrp / trajectory_floor / time_average_lrp）は sustainability.py 参照。
 
     Parameters
     ----------
