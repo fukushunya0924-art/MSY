@@ -771,6 +771,7 @@ def main():
     plot_sensitivity(sens_res_list[0], sens_res_list[1], model_str)
     plot_tactical(tactical["NLM"], tactical["LM"], model_str)
     plot_grid_scatter_constrained(grid_res_list[0], grid_res_list[1], model_str)
+    plot_common_sweep(sweep_res_list, model_str)
     plot_common_sweep_constrained(sweep_res_list, model_str)
     plot_nlm_lm_comparison_constrained(grid_res_list[0], grid_res_list[1], model_str)
 
