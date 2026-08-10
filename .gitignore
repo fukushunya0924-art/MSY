@@ -37,3 +37,10 @@ outputs/
 # Claude Code メモリ
 .claude/
 *.png
+
+# 発表スライドの中間生成物（make_figs.py / render_preview.py が再生成）
+発表/figs/
+発表/preview/
+
+# PowerPoint の一時ファイル
+~$*
