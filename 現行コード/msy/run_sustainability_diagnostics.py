@@ -26,6 +26,7 @@ capacity_ry 12変数）を読み込み、sustainability.py の公開関数だけ
   grid_search_general() を直接ループで呼ぶことで回避している
   （_upper_bound_sweep_legacy() 関数、公開APIのみ使用・sustainability.py 自体は不変）。
 """
+import argparse
 import copy
 import os
 import sys
@@ -120,6 +121,11 @@ def japanize_csv_header(path):
 # 診断設定（トラクタビリティ: n_grid=5 -> 5^4=625評価/条件）
 # =============================================================================
 N_GRID = 5
+# 上限感度グリッドの刻み幅。None なら N_GRID 等分割（上限を上げると刻みが粗くなる）。
+# 値を入れると全条件で刻みが揃うので、収量の増加が「上限のせい」か「刻みが粗く
+# なったせい」かを切り分けられる。--f-step で上書きする。
+F_STEP = None
+CSV_SUFFIX = ""      # f_step 指定時に "_step0.05" などを付け、既定のCSVを上書きしない
 BOUND_TOL = sus.DEFAULT_OPTIMIZATION["bound_tol"]
 F_UPPER_BASELINE = msy_core.F_MAX  # 0.95 = 現行run_msy.pyの物理上限（legacy制約の既定）
 F_UPPER_GRID = sus.DEFAULT_SENSITIVITY["fishing_upper_bounds"]  # [0.25,0.50,0.75,0.95,1.25]
@@ -282,11 +288,17 @@ def safe_ref_from_ratio(biomass, ratio):
 # =============================================================================
 
 def section_legacy(regime, pn, mn, T, X0n, csv_rows):
-    print(f"\n[1] legacy 制約の再現  (T={T:.1f}年, X0={fmt_vec(X0n)}, n_grid={N_GRID}^4={N_GRID**4})")
+    if F_STEP is None:
+        grid_desc = f"n_grid={N_GRID}^4={N_GRID**4}"
+    else:
+        _n = int(round(F_UPPER_BASELINE / F_STEP)) + 1
+        grid_desc = f"刻み一定 f_step={F_STEP}（{_n}^4={_n ** 4}）"
+    print(f"\n[1] legacy 制約の再現  (T={T:.1f}年, X0={fmt_vec(X0n)}, {grid_desc})")
     cfg = copy.deepcopy(sus.DEFAULT_SUSTAINABILITY)
     cfg["mode"] = "legacy_path"
 
-    grid = sus.grid_search_general(pn, mn, X0n, F_UPPER_BASELINE, "legacy_path", cfg, N_GRID, T=T)
+    grid = sus.grid_search_general(pn, mn, X0n, F_UPPER_BASELINE, "legacy_path", cfg,
+                                   N_GRID, T=T, f_step=F_STEP)
     unc = unconstrained_best(grid)
     cm = grid["constrained_maximum"]
 
@@ -441,13 +453,14 @@ def section_equilibrium_lrp(regime, pn, mn, X0n, csv_rows):
 #   直接ループで呼ぶ（公開APIのみ使用、sustainability.py 自体は無変更）。
 # =============================================================================
 
-def _upper_bound_sweep_legacy(pn, mn, X0n, T, f_upper_grid, n_grid):
+def _upper_bound_sweep_legacy(pn, mn, X0n, T, f_upper_grid, n_grid, f_step=None):
     cfg = copy.deepcopy(sus.DEFAULT_SUSTAINABILITY)
     cfg["mode"] = "legacy_path"
 
     rows = []
     for f_upper in f_upper_grid:
-        grid = sus.grid_search_general(pn, mn, X0n, f_upper, "legacy_path", cfg, n_grid, T=T)
+        grid = sus.grid_search_general(pn, mn, X0n, f_upper, "legacy_path", cfg,
+                                       n_grid, T=T, f_step=f_step)
         unc = unconstrained_best(grid)
         cm = grid["constrained_maximum"]
 
@@ -466,9 +479,15 @@ def _upper_bound_sweep_legacy(pn, mn, X0n, T, f_upper_grid, n_grid):
 
 
 def section_upper_bound(regime, pn, mn, T, X0n, csv_rows):
+    if F_STEP is None:
+        grid_desc = f"n_grid={N_GRID}^4={N_GRID**4}/条件（上限ごとに刻みが変わる）"
+    else:
+        pts = [int(round(u / F_STEP)) + 1 for u in F_UPPER_GRID]
+        grid_desc = (f"刻み一定 f_step={F_STEP}（点数/軸={pts}, "
+                     f"評価数={sum(n ** 4 for n in pts)}）")
     print(f"\n[3] 上限感度  f_upper in {F_UPPER_GRID}  "
-          f"(短期地平 T={T:.1f}年の時間平均収量, legacy_path, n_grid={N_GRID}^4={N_GRID**4}/条件)")
-    rows = _upper_bound_sweep_legacy(pn, mn, X0n, T, F_UPPER_GRID, N_GRID)
+          f"(短期地平 T={T:.1f}年の時間平均収量, legacy_path, {grid_desc})")
+    rows = _upper_bound_sweep_legacy(pn, mn, X0n, T, F_UPPER_GRID, N_GRID, f_step=F_STEP)
 
     print(f"  {'f_upper':>8}  {'無制約f*':^28}  {'無制約yield':>11}  {'@upper':>6}  |  "
           f"{'legacy制約f*':^28}  {'制約yield':>10}  {'@upper':>6}  分類")
@@ -580,9 +599,32 @@ def section_trajectory_floor(regime, pn, mn, X0n, f_chosen, csv_rows):
 # メイン
 # =============================================================================
 
-def main():
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(
+        description="持続性制約の診断ドライバ。既定は従来どおり NLM/LM 両方・n_grid 等分割。")
+    ap.add_argument("--regime", choices=["NLM", "LM", "both"], default="both",
+                    help="回すレジーム。刻み固定の重い実行は NLM/LM を別プロセスで並列に回す。")
+    ap.add_argument("--f-step", type=float, default=None, dest="f_step",
+                    help="上限感度グリッドの刻み幅（例 0.05）。省略時は n_grid 等分割。")
+    ap.add_argument("--suffix", default=None,
+                    help="出力CSVの接尾辞。省略時は --f-step から自動で決める。")
+    return ap.parse_args(argv)
+
+
+def main(argv=None):
+    global F_STEP, CSV_SUFFIX
+    args = parse_args(argv)
+    F_STEP = args.f_step
+    if args.suffix is not None:
+        CSV_SUFFIX = args.suffix
+    elif F_STEP is not None:
+        # 既定CSV（発表スライドが引用している）を上書きしないよう名前を分ける
+        CSV_SUFFIX = f"_step{F_STEP:g}"
+    regime_names = ["NLM", "LM"] if args.regime == "both" else [args.regime]
+
     print(_sep())
     print("持続性制約 診断ドライバ (sustainability.py 実データ実走)")
+    print(f"  レジーム={regime_names}  f_step={F_STEP}  CSV接尾辞='{CSV_SUFFIX}'")
     print(_sep())
 
     est_results = estimate_cache.load_estimates()
@@ -596,10 +638,11 @@ def main():
     df = load_clean_dataframe()
     series = get_series(df)
     nlm_mask, lm_mask = regime_masks(series)
-    regimes = [
-        ("NLM", slice_series(series, nlm_mask)),
-        ("LM", slice_series(series, lm_mask)),
-    ]
+    _all_regimes = {
+        "NLM": slice_series(series, nlm_mask),
+        "LM": slice_series(series, lm_mask),
+    }
+    regimes = [(n, _all_regimes[n]) for n in regime_names]
 
     all_csv_rows = {}
     section1_results = {}
@@ -654,8 +697,9 @@ def main():
             writer.writerow([k, code, MODE_LEGEND[k]])
 
     csv_paths = {}
-    for rname in ["NLM", "LM"]:
-        path = os.path.join(_out_dir, f"sustainability_sensitivity_{rname}.csv")
+    for rname in regime_names:
+        path = os.path.join(_out_dir,
+                            f"sustainability_sensitivity_{rname}{CSV_SUFFIX}.csv")
         sus.sensitivity_to_csv(all_csv_rows[rname], path)
         japanize_csv_header(path)
         csv_paths[rname] = path
@@ -671,7 +715,7 @@ def main():
     print("\n" + _sep())
     print("[全体サマリ] 条件別 f* / yield / 上限張り付き種 / feasible / 分類")
     print(_sep("-"))
-    for rname in ["NLM", "LM"]:
+    for rname in regime_names:
         r1 = section1_results[rname]
         r3 = section3_results[rname]
         print(f"\n-- {rname} --")
@@ -702,7 +746,7 @@ def main():
     print("\n" + _sep())
     print("[8つの要約観点への回答]")
     print(_sep("-"))
-    for rname in ["NLM", "LM"]:
+    for rname in regime_names:
         r1 = section1_results[rname]
         r2 = section2_results[rname]
         r3 = section3_results[rname]

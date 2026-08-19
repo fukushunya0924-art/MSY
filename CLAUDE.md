@@ -168,4 +168,4 @@ dy2 = (−r_y2 − f_y2)·y2 + C2·L12·x1·y2 + D2·L22·x2·y2
 
 **一時ファイル（次クリーンアップ候補）**: `msy/_run_constrained_report.py`（バッチ実行ヘルパー）, `msy/_partial_NLM.pkl` / `_partial_LM.pkl`（best-of中間）。
 
-詳細な実験経緯・判断根拠(Phase 1〜14)は `docs/research_log.md` を参照。学会発表の設計・逆算スケジュールは `発表準備.md` を参照。
+詳細な実験経緯・判断根拠(Phase 1〜15)は `docs/research_log.md` を参照。学会発表の設計・逆算スケジュールは `発表準備.md` を参照。
