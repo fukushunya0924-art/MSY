@@ -925,6 +925,146 @@ textbox(s, ML + 0.15, 5.76, 10.9, 1.05,
          "餌の魚どうしの取り合いを入れると対角はゼロでなくなり、内側の最大が戻りうる。"],
         size=15, space_after=6)
 
+# ================================================================== 24b 予備B8b（行列展開のみ・数式のみ）
+s = new_slide()
+
+
+def _cell_box(slide, x, y, w, h, val, size, color):
+    """val が Eq ノードなら OMML（Cambria Math）、str ならプレーンテキストで描く。
+
+    プレーンテキストでの上付き文字（⁻¹ 等）はフォント次第で欠けるため、
+    べき乗を含む値は必ず Eq ノードで渡す（呼び出し側の方針）。
+    """
+    if isinstance(val, str):
+        textbox(slide, x, y, w, h, val, size=size, align=PP_ALIGN.CENTER,
+                anchor=MSO_ANCHOR.MIDDLE, color=color)
+        return
+    tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    tf = tb.text_frame
+    tf.word_wrap = False
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    add_equation(tf, val, size=size + 1, color=color, align="center",
+                space_after=0, first=True)
+
+
+def bracket_grid(slide, label, x, y, cells, cell_w, cell_h, size=16,
+                 label_size=24, color=INK, label_w=None):
+    """label ＝ [4x4など] という図形ベースの行列（5枚目・図形版と同じ作り）。
+
+    label / cells の各要素は str（プレーンテキスト）または Eq ノード（OMML）。
+    べき乗（⁻¹ など）を含む要素は Eq ノードで渡すこと（フォント欠落を避けるため）。
+    label_w: label 列の幅を明示指定（省略時は str なら実測、Eq ノードなら 1.5in 固定）。
+    戻り値は (右端のx座標, 使った高さ) — 次の要素を並べる位置決めに使う。
+    """
+    n_rows, n_cols = len(cells), len(cells[0])
+    grid_w, grid_h = cell_w * n_cols, cell_h * n_rows
+    if label_w is None:
+        label_w = text_width(label, label_size) if isinstance(label, str) else 1.5
+    lbl_w = label_w + 0.10
+    lx = x
+    gx = x + lbl_w + 0.16
+    _cell_box(slide, lx, y + grid_h / 2 - 0.30, lbl_w, 0.60, label,
+             label_size, color)
+    for i in range(n_rows):
+        for j in range(n_cols):
+            _cell_box(slide, gx + j * cell_w, y + i * cell_h, cell_w, cell_h,
+                     cells[i][j], size, color)
+    for sx, shape in ((gx - 0.13, MSO_SHAPE.LEFT_BRACKET),
+                      (gx + grid_w + 0.03, MSO_SHAPE.RIGHT_BRACKET)):
+        br = slide.shapes.add_shape(shape, Inches(sx), Inches(y - 0.05),
+                                    Inches(0.12), Inches(grid_h + 0.10))
+        br.shadow.inherit = False
+        br.fill.background()
+        br.line.color.rgb = RGBColor.from_string(color)
+        br.line.width = Pt(1.4)
+    return gx + grid_w + 0.18, grid_h
+
+
+def _neg_lam(ij):
+    return E.seq(E.n("−"), lam(ij))
+
+
+def _cd(letter, num, ij):
+    return E.seq(E.sub(E.i(letter), E.n(str(num))), lam(ij))
+
+
+CL_INV = E.sup(E.d(E.seq(E.i("C"), E.o("∘"), E.i("L"))), E.n("−1"))
+L_INV = E.sup(E.i("L"), E.n("−1"))
+L_INV_T = E.sup(E.i("L"), E.n("−T"))
+NEG_L_INV = E.seq(E.n("−"), L_INV)
+A_LABEL = E.seq(E.i("A"), E.o("="))
+AINV_LABEL = E.seq(E.sup(E.i("A"), E.n("−1")), E.o("="))
+
+CELLS_A = [[E.n("0"), E.n("0"), _neg_lam("11"), _neg_lam("12")],
+          [E.n("0"), E.n("0"), _neg_lam("21"), _neg_lam("22")],
+          [_cd("c", 1, "11"), _cd("d", 1, "21"), E.n("0"), E.n("0")],
+          [_cd("c", 2, "12"), _cd("d", 2, "22"), E.n("0"), E.n("0")]]
+CELLS_AINV = [[E.n("0"), CL_INV],
+             [NEG_L_INV, E.n("0")]]
+
+# ---- 上半分（50%）: A, A^-1 ----
+W_A = 4 * 1.0
+right_a, h_a = bracket_grid(s, A_LABEL, ML + (CW - (1.5 + W_A)) / 2, 0.45,
+                            CELLS_A, 1.0, 0.48, size=15, label_size=20)
+
+W_AI = 2 * 1.95
+right_ai, h_ai = bracket_grid(s, AINV_LABEL, ML + (CW - (1.3 + W_AI)) / 2, 2.65,
+                              CELLS_AINV, 1.95, 0.55, size=15, label_size=18)
+
+# ---- 下半分（50%）: Y(f) の式（大）・L, C∘L, x0, y0 の成分表示・結論文 ----
+X0 = v("x", "0")
+Y0 = v("y", "0")
+FX = v("f", "x", True)
+FY = v("f", "y", True)
+FXT = E.sup(FX, E.n("T"))
+FYT = E.sup(FY, E.n("T"))
+RX = v("r", "x", True)
+RY = v("r", "y", True)
+
+EQ_BOXED = E.seq(E.i("Y"), E.d(E.i("f")), E.o("="),
+                 FXT, X0, E.o("+"), FYT, Y0, E.o("+"),
+                 FXT, E.d(E.seq(CL_INV, E.o("−"), L_INV_T), beg="[", end="]"), FY)
+
+tb = s.shapes.add_textbox(Inches(ML), Inches(4.05), Inches(CW), Inches(0.7))
+tf = tb.text_frame
+tf.word_wrap = True
+tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+add_equation(tf, EQ_BOXED, size=24, color=ORANGE, align="center", space_after=0, first=True)
+
+L_LABEL = E.seq(E.i("L"), E.o("="))
+CL_LABEL = E.seq(E.i("C"), E.o("∘"), E.i("L"), E.o("="))
+CELLS_L = [[lam("11"), lam("12")], [lam("21"), lam("22")]]
+CELLS_CL = [[_cd("c", 1, "11"), _cd("d", 1, "21")],
+           [_cd("c", 2, "12"), _cd("d", 2, "22")]]
+
+DEF_X0 = E.seq(X0, E.o("="), CL_INV, RY)
+DEF_Y0 = E.seq(Y0, E.o("="), L_INV, RX)
+
+DEFS_Y = 5.05
+right_l, h_l = bracket_grid(s, L_LABEL, 2.55, DEFS_Y, CELLS_L, 0.60, 0.42,
+                            size=15, label_size=18, label_w=0.42)
+right_cl, h_cl = bracket_grid(s, CL_LABEL, right_l + 0.55, DEFS_Y, CELLS_CL,
+                              0.82, 0.42, size=15, label_size=18, label_w=0.85)
+
+tb2 = s.shapes.add_textbox(Inches(right_cl + 0.55), Inches(DEFS_Y), Inches(3.0),
+                           Inches(0.84))
+tf2 = tb2.text_frame
+tf2.word_wrap = False
+tf2.margin_left = tf2.margin_right = tf2.margin_top = tf2.margin_bottom = 0
+add_equation(tf2, DEF_X0, size=17, color=INK, align="left", space_after=8, first=True)
+add_equation(tf2, DEF_Y0, size=17, color=INK, align="left", space_after=0)
+
+tb3 = s.shapes.add_textbox(Inches(ML), Inches(6.08), Inches(CW), Inches(0.75))
+tf3 = tb3.text_frame
+tf3.word_wrap = True
+tf3.margin_left = tf3.margin_right = tf3.margin_top = tf3.margin_bottom = 0
+p = tf3.paragraphs[0]
+p.alignment = PP_ALIGN.CENTER
+run = p.add_run()
+run.text = "二次関数ではなく多重線形の形になるため、最適な f は必ず探索範囲の上限または下限（頂点）に張り付く。"
+_set_font(run, 17, True, ORANGE)
+
 # ============================================== 25 マイワシ版の当てはまり（8枚目）
 # 餌の魚 x1 をマアジに置き換える前の種構成でも、8・9・10枚目の話が
 # そのまま成り立つかを確かめる3枚。図と数値はマイワシ版で計算し直したもの。
