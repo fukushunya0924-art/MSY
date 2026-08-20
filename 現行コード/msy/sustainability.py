@@ -334,8 +334,10 @@ def simulate_constant_f(params_norm, means, X0_norm, f_vec, t_end, dt):
 
     success は「solve_ivp が status==0 で完走し、かつ軌道が全て有限」であることのみで
     決まる（負値の有無は success に影響しない。負値は any_negative で別途報告する。
-    model.make_ode 内部の状態フロアは微分評価にのみ適用され、solve_ivp が保持する
-    状態そのものは負に振れうるため、この区別が必要）。
+    capacity_ry の右辺は状態変数に比例し除算を含まないため解析的には負値化しない
+    はずだが、離散化・積分誤差での微小な負の揺れは起こりうるため any_negative で
+    監視する。Phase 15c で model.py 側の状態フロアを撤去し、以前フロアが誘発して
+    いた人工的な負値の線形突き抜けは解消済み）。
 
     Returns
     -------
