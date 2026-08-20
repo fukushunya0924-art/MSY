@@ -17,6 +17,7 @@ Phase 8（2026-07-10〜11時点、`estimates_capacity_ry.pkl` がまだマイワ
 
 sustainability.py・msy_core.py・run_sustainability_diagnostics.py は一切変更しない。
 """
+import argparse
 import os
 import sys
 import time
@@ -38,6 +39,7 @@ from data_loader_iwashi import (                     # noqa: E402  マイワシ�
     get_regime_T, get_regime_X0_norm,
 )
 # 診断本体は マアジ版ドライバから関数を再利用（ロジック重複を避ける）
+import run_sustainability_diagnostics as rsd          # noqa: E402 (F_STEP を立てるため)
 from run_sustainability_diagnostics import (         # noqa: E402
     section_legacy, section_equilibrium_lrp, section_upper_bound,
     section_trajectory_floor, fmt_vec, ffmt, _sep, japanize_csv_header,
@@ -114,18 +116,36 @@ def reconstruct_iwashi_estimates(regimes):
     return est_results
 
 
-def main():
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description="持続性制約の診断ドライバ（マイワシ版）。既定は従来どおり両レジーム・n_grid 等分割。")
+    ap.add_argument("--regime", choices=["NLM", "LM", "both"], default="both")
+    ap.add_argument("--f-step", type=float, default=None, dest="f_step",
+                    help="上限感度グリッドの刻み幅（例 0.05）。省略時は n_grid 等分割。")
+    ap.add_argument("--suffix", default=None, help="出力CSVの接尾辞（省略時は --f-step から自動）。")
+    args = ap.parse_args(argv)
+
+    # section_upper_bound はマアジ版モジュールの関数なので、その名前空間の F_STEP を見る
+    rsd.F_STEP = args.f_step
+    if args.suffix is not None:
+        suffix = args.suffix
+    elif args.f_step is not None:
+        suffix = f"_step{args.f_step:g}"
+    else:
+        suffix = ""
+    regime_names = ["NLM", "LM"] if args.regime == "both" else [args.regime]
+
     print(_sep())
     print("持続性制約 診断ドライバ（マイワシ版, Phase11以前の種構成）")
+    print(f"  レジーム={regime_names}  f_step={args.f_step}  CSV接尾辞='{suffix}'")
     print(_sep())
 
     df = load_clean_dataframe()
     series = get_series(df)
     nlm_mask, lm_mask = regime_masks(series)
-    regimes = [
-        ("NLM", slice_series(series, nlm_mask)),
-        ("LM", slice_series(series, lm_mask)),
-    ]
+    _all_regimes = {"NLM": slice_series(series, nlm_mask),
+                    "LM": slice_series(series, lm_mask)}
+    regimes = [(n, _all_regimes[n]) for n in regime_names]
 
     print("\n[Step 1] 自由推定12変数（capacity_ry, マイワシ版, research_log.md Phase 8 記載値から再構成・再推定なし）")
     est_results = reconstruct_iwashi_estimates(regimes)
@@ -165,8 +185,9 @@ def main():
     print("\n" + _sep())
     print("[CSV出力]（マイワシ版）")
     csv_paths = {}
-    for rname in ["NLM", "LM"]:
-        path = os.path.join(_out_dir, f"sustainability_sensitivity_マイワシ_{rname}.csv")
+    for rname in regime_names:
+        path = os.path.join(_out_dir,
+                            f"sustainability_sensitivity_マイワシ_{rname}{suffix}.csv")
         sus.sensitivity_to_csv(all_csv_rows[rname], path)
         japanize_csv_header(path)
         csv_paths[rname] = path
@@ -175,7 +196,7 @@ def main():
     print("\n" + _sep())
     print("[マアジ版との比較サマリ]")
     print(_sep("-"))
-    for rname in ["NLM", "LM"]:
+    for rname in regime_names:
         r1 = section1_results[rname]
         r5 = section5_results[rname]
         print(f"  {rname}: legacy制約 f*={fmt_vec(r1['cm']['f_opt'])}  "

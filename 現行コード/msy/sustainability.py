@@ -334,8 +334,10 @@ def simulate_constant_f(params_norm, means, X0_norm, f_vec, t_end, dt):
 
     success は「solve_ivp が status==0 で完走し、かつ軌道が全て有限」であることのみで
     決まる（負値の有無は success に影響しない。負値は any_negative で別途報告する。
-    model.make_ode 内部の状態フロアは微分評価にのみ適用され、solve_ivp が保持する
-    状態そのものは負に振れうるため、この区別が必要）。
+    capacity_ry の右辺は状態変数に比例し除算を含まないため解析的には負値化しない
+    はずだが、離散化・積分誤差での微小な負の揺れは起こりうるため any_negative で
+    監視する。Phase 15c で model.py 側の状態フロアを撤去し、以前フロアが誘発して
+    いた人工的な負値の線形突き抜けは解消済み）。
 
     Returns
     -------
@@ -835,9 +837,16 @@ def _evaluate_candidate(params_norm, means, X0_norm, f_vec, feasibility_mode, cf
 
 
 def grid_search_general(params_norm, means, X0_norm, f_upper, feasibility_mode, cfg,
-                         n_grid, T=None):
-    """各 f_i in linspace(F_MIN, f_upper_i, n_grid) の直積グリッドを全列挙し、
-    feasibility_mode に応じた収量・持続性を評価する。
+                         n_grid, T=None, f_step=None):
+    """各 f_i の直積グリッドを全列挙し、feasibility_mode に応じた収量・持続性を評価する。
+
+    グリッドの作り方は2通り:
+      f_step=None : linspace(F_MIN, f_upper_i, n_grid)。点数を固定するので、
+                    上限を上げると刻み幅が上限に比例して粗くなる（従来の挙動）。
+      f_step=値   : F_MIN から f_upper_i まで f_step 刻み。上限を変えても解像度が
+                    変わらないので、上限感度で「収量が増えたのは上限のせいか
+                    刻みが粗くなったせいか」を切り分けられる。点数は上限に比例
+                    して増えるため計算量に注意（上限1.25・刻み0.05で 26^4 評価）。
 
     NaN/Inf/solver失敗の候補は絶対に「高収量feasible」として採用しない
     （all_feasible は yield が有効な候補でのみ True になり得る）。
@@ -854,7 +863,21 @@ def grid_search_general(params_norm, means, X0_norm, f_upper, feasibility_mode, 
     if feasibility_mode == "legacy_path" and T is None:
         raise ValueError("grid_search_general: T is required when feasibility_mode='legacy_path'.")
 
-    axes = [np.linspace(msy_core.F_MIN, f_upper_vec[i], n_grid) for i in range(4)]
+    if f_step is None:
+        axes = [np.linspace(msy_core.F_MIN, f_upper_vec[i], n_grid) for i in range(4)]
+    else:
+        if f_step <= 0:
+            raise ValueError(f"grid_search_general: f_step must be positive, got {f_step}.")
+        axes = []
+        for i in range(4):
+            n_i = int(round((f_upper_vec[i] - msy_core.F_MIN) / f_step)) + 1
+            if abs(msy_core.F_MIN + f_step * (n_i - 1) - f_upper_vec[i]) > 1e-9:
+                raise ValueError(
+                    f"grid_search_general: f_step={f_step} does not divide the range "
+                    f"[{msy_core.F_MIN}, {f_upper_vec[i]}] evenly.")
+            axes.append(msy_core.F_MIN + f_step * np.arange(n_i))
+    # 軸ごとに点数が違いうる（f_step 指定時）ので、以降の reshape は shape を使う
+    shape = tuple(len(a) for a in axes)
     mesh = np.meshgrid(*axes, indexing="ij")
     all_f = np.stack(mesh, axis=-1).reshape(-1, 4)
     n_total = all_f.shape[0]
@@ -905,11 +928,11 @@ def grid_search_general(params_norm, means, X0_norm, f_upper, feasibility_mode, 
         # (かつ既に上限でない場合) 隣接候補が infeasible に転じる、という離散的な
         # binding-constraint の定義。LRP/floor/legacy の区別を問わず同じロジックで
         # 検出できるので、モード別のしきい値ヒアリスティックを避けられる。
-        idx_multi = np.unravel_index(idx, (n_grid,) * 4)
-        feasible_grid = all_feasible.reshape((n_grid,) * 4)
+        idx_multi = np.unravel_index(idx, shape)
+        feasible_grid = all_feasible.reshape(shape)
         biomass_active = False
         for ax in range(4):
-            if idx_multi[ax] < n_grid - 1:
+            if idx_multi[ax] < shape[ax] - 1:
                 nb = list(idx_multi)
                 nb[ax] += 1
                 if not feasible_grid[tuple(nb)]:
@@ -1093,7 +1116,8 @@ def find_limit_point(grid_result, cfg):
 # 感度分析
 # =============================================================================
 
-def lrp_sensitivity(params_norm, means, X0_norm, cfg, lrp_ratios, f_upper, n_grid, T=None):
+def lrp_sensitivity(params_norm, means, X0_norm, cfg, lrp_ratios, f_upper, n_grid,
+                    T=None, f_step=None):
     """lrp_ratio を lrp_ratios で振り、各値について grid_search_general + near_optimal_safe
     （＋可能ならequilibrium最適点でのtrajectory_floorクロスチェック）を実行する。
 
@@ -1101,6 +1125,9 @@ def lrp_sensitivity(params_norm, means, X0_norm, cfg, lrp_ratios, f_upper, n_gri
         積分期間（年）。legacy_path モード（および内部で軌道積分する任意のモード）で
         grid_search_general に必須。equilibrium_lrp は X0/時間非依存なので T=None のまま可。
         シグネチャ末尾に置くことで、既存のキーワード呼び出しを壊さない。
+    f_step : float or None
+        グリッドの刻み幅。None なら n_grid 等分割（従来）。値を与えると上限に
+        よらず解像度が一定になる（grid_search_general の docstring 参照）。
 
     Returns
     -------
@@ -1111,7 +1138,8 @@ def lrp_sensitivity(params_norm, means, X0_norm, cfg, lrp_ratios, f_upper, n_gri
     for ratio in lrp_ratios:
         sub_cfg = copy.deepcopy(cfg)
         sub_cfg["lrp_ratio"] = ratio
-        grid = grid_search_general(params_norm, means, X0_norm, f_upper, mode, sub_cfg, n_grid, T=T)
+        grid = grid_search_general(params_norm, means, X0_norm, f_upper, mode, sub_cfg,
+                                   n_grid, T=T, f_step=f_step)
 
         finite_yield = grid["all_yield"][np.isfinite(grid["all_yield"])]
         y_max = float(np.max(finite_yield)) if finite_yield.size else float("nan")
@@ -1153,13 +1181,17 @@ def _diagnose_upper_bound_pattern(yields, at_uppers):
     return "lrp-limited"
 
 
-def upper_bound_sensitivity(params_norm, means, X0_norm, cfg, f_upper_grid, lrp_ratio, n_grid, T=None):
+def upper_bound_sensitivity(params_norm, means, X0_norm, cfg, f_upper_grid, lrp_ratio,
+                            n_grid, T=None, f_step=None):
     """fishing_upper_bound を f_upper_grid で振り、各値について grid_search_general で最適化する。
 
     T : float or None
         積分期間（年）。legacy_path モード（および内部で軌道積分する任意のモード）で
         grid_search_general に必須。equilibrium_lrp は X0/時間非依存なので T=None のまま可。
         シグネチャ末尾に置くことで、既存のキーワード呼び出しを壊さない。
+    f_step : float or None
+        グリッドの刻み幅。None なら n_grid 等分割（従来）。値を与えると上限に
+        よらず解像度が一定になる（grid_search_general の docstring 参照）。
 
     Returns
     -------
@@ -1172,7 +1204,8 @@ def upper_bound_sensitivity(params_norm, means, X0_norm, cfg, f_upper_grid, lrp_
     for f_upper in f_upper_grid:
         sub_cfg = copy.deepcopy(cfg)
         sub_cfg["lrp_ratio"] = lrp_ratio
-        grid = grid_search_general(params_norm, means, X0_norm, f_upper, mode, sub_cfg, n_grid, T=T)
+        grid = grid_search_general(params_norm, means, X0_norm, f_upper, mode, sub_cfg,
+                                   n_grid, T=T, f_step=f_step)
         cm = grid["constrained_maximum"]
 
         if np.all(np.isfinite(cm["f_opt"])):

@@ -44,8 +44,6 @@ MODELS = {
     },
 }
 
-# 状態変数のアンダーフロー・ゼロ割り回避用フロア（正規化空間, 平均1.0スケール）
-_STATE_FLOOR = 1e-5
 # 対数誤差評価時に log(0) を避けるためのクリップ下限（正規化空間）
 _LOG_CLIP_MIN = 1e-5
 # 積分失敗（solve_ivp が非収束/例外）時に least_squares へ返す一律ペナルティ残差
@@ -64,9 +62,10 @@ def make_ode(fx1_i: Callable[[float], float], fx2_i: Callable[[float], float],
     def ode(t, state, p):
         x1, x2, y1, y2 = state
         r_x1, r_x2, r_y1, r_y2, L11, L12, L21, L22, C1, D1, C2, D2 = p
-        # ゼロ割り・負値化を防ぐフロア（生物量は物理的に正のはず）
-        x1 = max(_STATE_FLOOR, x1); x2 = max(_STATE_FLOOR, x2)
-        y1 = max(_STATE_FLOOR, y1); y2 = max(_STATE_FLOOR, y2)
+        # capacity_ry の右辺は状態変数に比例する形で除算を含まないため、
+        # x=0 は不変集合であり正の初期値からは解析的に負にならない。
+        # フロアで固定すると微分がフロア値（正の定数）で評価され続け、
+        # 積分がゼロを突き抜けて線形に負へ進む副作用を生む（削除済み, Phase 15c）。
         dx1 = (r_x1 - fx1_i(t)) * x1 - L11 * x1 * y1 - L12 * x1 * y2
         dx2 = (r_x2 - fx2_i(t)) * x2 - L21 * x2 * y1 - L22 * x2 * y2
         dy1 = (-r_y1 - fy1_i(t)) * y1 + C1 * L11 * x1 * y1 + D1 * L21 * x2 * y1

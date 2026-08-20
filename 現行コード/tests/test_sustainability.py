@@ -259,6 +259,54 @@ def test_upper_bound_binding():
 
 
 # =============================================================================
+# 5b. f_step（刻み固定グリッド）
+# =============================================================================
+def test_f_step_fixed_resolution():
+    """f_step 指定時、軸が上限によらず同じ刻みになり、上限は必ず格子点に含まれること。
+
+    従来の n_grid 等分割は上限を上げると刻みも粗くなるため、上限感度で
+    「収量の増加が上限のせいか刻みのせいか」を分離できなかった。その修正の回帰テスト。
+    """
+    p = _params(r_x1=1.0, r_x2=0.5, r_y1=0.3, r_y2=0.3,
+                L11=0.5, L12=0.0, L21=0.0, L22=0.4,
+                C1=0.6, D1=0.0, C2=0.0, D2=0.5)
+    means, X0 = np.ones(4), np.ones(4)
+    cfg = copy.deepcopy(sus.DEFAULT_SUSTAINABILITY)
+    cfg["mode"] = "equilibrium_lrp"
+    cfg["lrp_ratio"] = 0.1
+
+    steps = []
+    for f_upper, n_expected in [(0.2, 5), (0.4, 9)]:
+        grid = sus.grid_search_general(p, means, X0, [f_upper, 0.0, 0.0, 0.0],
+                                        "equilibrium_lrp", cfg, n_grid=3, f_step=0.05)
+        axis = np.unique(np.round(grid["all_f"][:, 0], 10))
+        assert len(axis) == n_expected, f"上限{f_upper}の点数が{len(axis)}（期待{n_expected}）"
+        assert np.isclose(axis[-1], f_upper), f"上限{f_upper}が格子点にない: {axis[-1]}"
+        d = np.diff(axis)
+        assert np.allclose(d, 0.05), f"刻みが0.05でない: {d}"
+        steps.append(float(d[0]))
+        # n_grid=3 は無視され、軸ごとの点数が違っても境界診断が壊れないこと
+        assert grid["constrained_maximum"]["classification"] == "fishing_upper_bound"
+
+    assert steps[0] == steps[1], "上限が変わると刻みも変わってしまっている"
+
+    # f_step=None は従来どおり n_grid 等分割のまま
+    g_legacy = sus.grid_search_general(p, means, X0, [0.4, 0.0, 0.0, 0.0],
+                                        "equilibrium_lrp", cfg, n_grid=3)
+    assert len(np.unique(np.round(g_legacy["all_f"][:, 0], 10))) == 3
+
+    # 上限を割り切らない刻みは黙って丸めず、はっきり失敗すること
+    try:
+        sus.grid_search_general(p, means, X0, [0.4, 0.0, 0.0, 0.0],
+                                "equilibrium_lrp", cfg, n_grid=3, f_step=0.03)
+        raise AssertionError("割り切れない f_step が ValueError にならなかった")
+    except ValueError:
+        pass
+
+    print(f"[OK] test_f_step_fixed_resolution (刻み={steps}, 上限0.2→5点 / 0.4→9点)")
+
+
+# =============================================================================
 # 6. LRP境界（上限より先にLRPが効く）
 # =============================================================================
 
@@ -576,6 +624,7 @@ def main():
         test_equilibrium_analytical_two_species,
         test_non_positive_equilibrium_infeasible,
         test_upper_bound_binding,
+        test_f_step_fixed_resolution,
         test_lrp_boundary_binding,
         test_near_optimal_safe_solution,
         test_time_average_yield_identity,
